@@ -1,5 +1,9 @@
 #!/bin/sh
-# Reboot so that LK stops in fastboot. LK ignores the misc BCB; it acts on the reboot reason
-# that the Exynos reboot driver sets for "reboot bootloader" (see rebootarg).
+# Make LK stop in fastboot on the next boot, without touching the board.
+# LK ignores the misc BCB and the 5.10 "reboot bootloader" code (PMU SYSIP_DAT0 = 3), but it
+# enters fastboot after a watchdog reset ("Entering fastboot: Abnormal RST_STAT: 0x1000000").
+# So: stop the busybox watchdog daemon without the magic close; the SoC resets in ~20 s.
 sync
-exec rebootarg bootloader
+pid=$(pidof watchdog) || { echo "no watchdog daemon running" >&2; exit 1; }
+kill -9 $pid
+echo "watchdog daemon stopped; the board resets into LK fastboot in about 20 s"

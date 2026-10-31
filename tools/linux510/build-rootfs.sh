@@ -57,6 +57,12 @@ chroot $R systemctl enable systemd-networkd.service
 
 # Helper: reboot into LK fastboot (busybox/systemd reboot cannot pass "bootloader" reliably)
 install -m 755 /t/rebootarg/rebootarg $R/usr/local/sbin/rebootarg
+install -m 755 /t/to-fastboot $R/usr/local/sbin/to-fastboot
+install -m 755 /t/lt8912b-hdmi.sh $R/usr/local/sbin/lt8912b-hdmi.sh
+install -m 755 /t/fb-test.py $R/usr/local/bin/fb-test.py
+install -m 755 /t/fb-hold.py $R/usr/local/bin/fb-hold.py
+install -m 644 /t/e850-hdmi.service $R/etc/systemd/system/e850-hdmi.service
+chroot $R systemctl enable e850-hdmi.service
 
 # Student account
 chroot $R useradd -m -s /bin/bash -G sudo,video,i2c e850 2>/dev/null || chroot $R useradd -m -s /bin/bash -G sudo,video e850
@@ -73,6 +79,15 @@ for extra in /o/ext-*/*.ko; do
 done
 cp /o/modules.order /o/modules.builtin /o/modules.builtin.modinfo $R/lib/modules/$KVER/ 2>/dev/null || true
 chroot $R depmod "$KVER"
+# udev would autoload every module whose DT node exists, including the ones the initramfs
+# leaves out on purpose (autoload.deny: camera, MFC, Wi-Fi/BT, sound, display...). fimc-is
+# probing the ERD3830 sensors panicked the kernel (docs 7.18), so blacklist them here too;
+# `modprobe NAME` by hand still works.
+mkdir -p $R/etc/modprobe.d
+{ echo "# generated from tools/linux510/autoload.deny by build-rootfs.sh"
+  sed 's|.*/||; s|\.ko$||' /o/modules.order | grep -Ef /t/autoload.deny | sed 's|^|blacklist |'
+} > $R/etc/modprobe.d/e850-blacklist.conf
+echo "blacklisted: $(grep -c ^blacklist $R/etc/modprobe.d/e850-blacklist.conf) modules"
 
 rm -rf $R/var/cache/apt/archives/*.deb $R/var/lib/apt/lists/*
 mkdir -p /out

@@ -628,3 +628,84 @@ init이 일을 마치고 CPU가 처음 idle에 들어가는 순간 멈췄다. �
 | `e850.stage2=N` | 2단계 모듈 앞 N개만 적재 |
 | `e850.noswitch` | 루트 마운트 후 Debian으로 넘어가지 않음. 60초 동안 `alive` 로그를 찍은 뒤 `rebootarg bootloader`로 fastboot 복귀 |
 | `e850.nowdt` | 워치독 끔 (멈추면 전원 재투입 필요) |
+
+## 8. Debian 12 부팅 성공, 그리고 HDMI 출력
+
+### 8.1 Debian 부팅 (`cpuidle.off=1` 이후)
+
+```text
+[   21.825408] [init] switching to /dev/mmcblk0p24
+Debian GNU/Linux 12 e850-96 ttyGS0
+e850-96 login: root (automatic login)
+root@e850-96:~# systemctl is-system-running
+running
+```
+
+맥에서 접속: `screen /dev/cu.usbmodeme850_961 115200` (USB-C 케이블 하나, root 자동 로그인).
+
+남은 문제 두 가지:
+
+1. **udev가 카메라 모듈을 자동 적재하다 패닉:**
+   - `fimc_is` `sensor_module_probe` NULL 접근.
+   - 원인은 OV5647 DT의 `power_seq`에 `use = <1>;`가 빠진 것이었다(`sensor dt callback is NULL`). 고쳤다.
+   - 그리고 initramfs에서 빼 둔 모듈 49개를 rootfs에서도 `blacklist`에 넣었다(`/etc/modprobe.d/e850-blacklist.conf`, `build-rootfs.sh`가 `autoload.deny`로 생성). 손으로 `modprobe`하는 것은 그대로 된다.
+2. **USB 네트워크(NCM/ECM)는 맥 → 보드 방향 수신이 0이다:**
+   - 로그에 `workqueue uether ... cpus=7 ... pending: process_rx_w`가 남는다. 수신 작업이 꺼진 CPU 7(`maxcpus=1`)에 걸려 있다.
+   - 해결은 다음 과제로 둔다. 셸은 USB 시리얼(ACM)로 충분하다.
+
+**버튼 없이 fastboot로 들어가기** — `to-fastboot`(워치독 데몬을 강제 종료하면 약 20초 뒤 리셋되고, LK가 `Abnormal RST_STAT`로 fastboot에 들어간다):
+
+```bash
+root@e850-96:~# to-fastboot         # = sync; kill -9 $(pidof watchdog)
+# Mac: fastboot devices → ./fbmini flash boot ... → ./fbmini reboot
+```
+
+(5.10의 `reboot bootloader`(PMU SYSIP_DAT0 = 3)는 이 Android 10 LK가 알아듣지 못해 그냥 재부팅된다.)
+
+### 8.2 HDMI: DECON → DSIM0 → LT8912B → HDMI (`modules/e850-hdmi`)
+
+E850-96의 HDMI는 SoC의 MIPI-DSI를 **Lontium LT8912B** 브리지가 HDMI로 바꾼다. 필요한 값은 모두 Android 10의 DTB와 DTBO(idx 2)에서 꺼냈다.
+
+| 항목 | 값 |
+|---|---|
+| LT8912B | `i2c@13840000`(i2c_1), 0x48(main) / 0x49(DSI·CEC). 칩 ID 레지스터 0x00/0x01 = `0x12 0xb2` |
+| 핀 | reset GPA2[2](active low), int GPA2[0], HPD GPA2[4], **GPG1[2] `mipi_switch_hdmi` = high** |
+| panel_0 | gpios `<gpg2 5>`, `<gpg1 1>`, regulator `vdd_ldo28` |
+| 타이밍 | 1920×1080@60, h-porch 148/88/44, v-porch 36/4/5, 4 lanes, HS 1000 MHz, PMSK 2/308/2/45371 |
+
+5.10 BSP에서 막힌 곳과 해결 (시험 순서대로):
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| DT 오버레이 `FDT_ERR_NOTFOUND` | SoC DT에서 `//#include "s5e3830-dpu.dtsi"`(디스플레이 전체가 주석) | 주석 해제 |
+| `MIPI DSIM read Timeout`, `panel is not matched` | LK가 `panel_0`의 `ddi_id`를 **0xff**로 덮어씀(`kd101n65_get_id panel ID is 0xff`) | lcd_info id와 패널 ops id를 0xff로 |
+| `panel is not matched`, `finding...`도 없음 | 오버레이 파일 안의 `/ { ... }`는 오버레이 자신의 루트라 적용되지 않음 | `&{/} { ... }` |
+| 패널 id가 없을 때 NULL 접근 | `panel_list[10]` 중 2칸만 채워져 있음 | `panel_lt8912b_ops` 등록(DSI 명령 없는 빈 ops) |
+| `decon0: ... command mode` | BSP DECON `psr_mode = <2>` | `psr_mode = <0>`(video) |
+| DSIM probe가 중간에 반환 | 비디오 모드는 `memory-region`(fb_handover) 필수인데 rmem dtsi에서 주석 | `&{/reserved-memory}`에 `fb_handover`(0xF9800000, 40 MB) |
+| `PMSK(36 4 5 0)` | `CONFIG_EXYNOS_DSIM_DITHER`라서 pmsk를 **14칸** 읽음 | 14칸으로 |
+| 언더런 irq에서 NULL(`dsim_irq_handler`) | LK가 DSIM을 켜 둔 채로 넘김 → `dsim->panel` 설정 전에 irq 발생 | `if (dsim->panel && ...)` 1줄 패치 |
+| `/dev/fb0` write → `ENODEV` | Exynos fb는 write 미지원 | `mmap` |
+| fd를 닫으면 화면이 꺼짐 | `decon_release` → `decon_disable` | `fb-hold.py`가 fd를 열어 둔 채 대기(systemd 서비스) |
+| 모니터 "No HDMI" | DSI EoT 패킷 사용 중(`eotp enabled`) | lcd_info에 **`eotp_disabled = <1>`** (메인라인 LT8912B는 `MIPI_DSI_MODE_NO_EOT_PACKET`) |
+
+LT8912B 레지스터는 메인라인 `drivers/gpu/drm/bridge/lontium-lt8912b.c`(v6.6) 순서를 그대로 쓴다: init → lanes → mipi basic → video setup(1080p) → dds → rxlogicres → lvds. 사용자 공간에서 `i2cset`으로 쓴다(`tools/linux510/lt8912b-hdmi.sh`).
+
+부팅하면 자동으로 켜진다(`e850-hdmi.service`):
+
+```text
+ExecStartPre = modprobe dpu
+ExecStart    = fb-hold.py          # /dev/fb0 unblank + 컬러바 + 열어 둔 채 대기
+ExecStartPost= lt8912b-hdmi.sh     # DSI 클록이 돈 뒤 브리지 설정
+```
+
+**결과: HDMI 모니터에 1920×1080 컬러바 출력 확인 (2026-11-01).**
+
+```bash
+# 직접 해 보기
+systemctl status e850-hdmi
+lt8912b-hdmi.sh status          # 칩 ID, HPD
+fb-test.py                      # 다른 그림을 그리려면 fb-hold.py를 참고(mmap + FBIOPAN_DISPLAY)
+```
+
+적용 방법(커널 트리): `sh modules/e850-hdmi/apply.sh /work/kernel` → `make ... modules dtbs`.

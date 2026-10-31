@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * E850-96 HDMI out: DECON -> DSIM0 (4 lanes, video mode, 1920x1080@60) -> LT8912B -> HDMI
+ *
+ * Taken from the E850-96 Android 10 DT (boot.img dtb + dtbo idx 2, see docs):
+ *   LT8912B on i2c@13840000 (i2c_1), 0x48 (+0x49 DSI/CEC page)
+ *   reset GPA2[2] (active low), int GPA2[0], HPD GPA2[4]
+ *   GPG1[2] "mipi_switch_hdmi" high: MIPI lanes to the LT8912B
+ *   panel_0 gpios <gpg2 5> (reset), <gpg1 1> (power), regulator vdd_ldo28
+ *   timing "ota7290b_fhd_vid": 1920x1080@60, h-porch 148/88/44, v-porch 36/4/5,
+ *   hs clk 1000 MHz, pmsk 2 308 2 45371
+ * The bridge is programmed from user space: tools/linux510/lt8912b-hdmi.sh
+ */
+
+/* "&{/}", not "/ {": this file is part of an overlay (s5e3830-erd3830.dtbo); a plain root
+ * block would land in the overlay itself and be dropped when it is applied. */
+&{/} {
+	lt8912b_1080p: lt8912b_1080p60 {
+		id = <0xff>;	/* LK writes ddi_id 0xff into panel_0 ("kd101n65_get_id panel ID is 0xff") */
+		mode = <0>;		/* video mode */
+		resolution = <1920 1080>;
+		size = <1920 1080>;
+		timing,refresh = <60>;
+		timing,h-porch = <148 88 44>;	/* hbp hfp hsa */
+		timing,v-porch = <36 4 5>;	/* vbp vfp vsa */
+		timing,dsi-hs-clk = <1000>;
+		/* 14 cells: this kernel has CONFIG_EXYNOS_DSIM_DITHER and reads all of them;
+		 * with 4 the read fails and p/m/s/k keep stale values ("PMSK(36 4 5 0)") */
+		timing,pmsk = <2 308 2 45371	/* p m s k (Android 10 values) */
+				0 0 0 0		/* MFR MRR SEL_PF ICP */
+				0 0 0 0		/* AFC_ENB EXTAFC FEED_EN FSEL */
+				0 0>;		/* FOUT_MASK RSEL */
+		timing,dsi-escape-clk = <20>;
+		mic_en = <0>;
+		mic_ratio = <0>;
+		mic_ver = <0>;
+		type_of_ddi = <2>;	/* 2: Normal (not a Samsung mobile DDI) */
+		dsc_en = <0>;
+		dsc_cnt = <0>;
+		dsc_slice_num = <0>;
+		data_lane = <4>;
+		/* the LT8912B wants no EoT packet (mainline sets MIPI_DSI_MODE_NO_EOT_PACKET) */
+		eotp_disabled = <1>;
+		cmd_underrun_cnt = <4942>;
+		vt_compensation = <39>;
+		mres_en = <0>;
+		hdr_num = <0>;
+	};
+};
+
+&panel_0 {
+	ddi_id = <0xff>;
+	lcd_info = <&lt8912b_1080p>;
+	gpios = <&gpg2 5 0x1>, <&gpg1 1 0x1>;
+	regulator_1p8v = "vdd_ldo28";
+};
+
+/* the BSP DT has DECON in MIPI command mode (psr_mode 2); HDMI through the bridge is video mode */
+&decon_f {
+	psr_mode = <0>;
+	trig_mode = <0>;
+};
+
+/* video mode: DSIM probe stops early without a "memory-region" (fb handover from LK).
+ * s5e3830-rmem.dtsi has this node commented out (command-mode BSP); same address/size here. */
+&{/reserved-memory} {
+	fb_handover: fb_handover {
+		compatible = "exynos,fb_handover";
+		reg = <0x0 0xF9800000 0x02800000>;
+	};
+};
+
+&dsim_0 {
+	memory-region = <&fb_handover>;
+};
+
+&i2c_1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+};
+
+&gpg1 {
+	mipi-switch-hdmi {
+		gpio-hog;
+		gpios = <2 0>;
+		output-high;
+		line-name = "mipi_switch_hdmi";
+	};
+};
+
+&gpa2 {
+	lt8912b-reset {
+		gpio-hog;
+		gpios = <2 0>;
+		output-high;	/* reset is active low: high = running */
+		line-name = "lt8912b_reset_n";
+	};
+};

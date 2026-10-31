@@ -6,7 +6,7 @@
 # modules.load order, then switch to the root filesystem given by root=.
 #
 # Stage 1 loads only what the eMMC, reboot, the watchdog and the USB device
-# port need (modules.stage1). Then a USB gadget (ACM serial + NCM network)
+# port need (modules.stage1). Then a USB gadget (ACM serial + ECM network)
 # is set up on the USB-C port and e850-vbus.ko reports VBUS (this board has
 # no PDIC chip that would); on the Mac the shell is /dev/cu.usbmodem*.
 # The debug UART (ttySAC0) carries kernel messages only: opening it from user
@@ -57,7 +57,8 @@ load_list() {
     log "$1: $n ok, $fail failed"
 }
 
-# USB gadget through configfs: acm.usb0 -> /dev/ttyGS0, ncm.usb0 -> network interface usb0
+# USB gadget through configfs: acm.usb0 -> /dev/ttyGS0, ecm.usb0 -> network interface usb0
+# (ECM, not NCM: with NCM the Mac's transmit side failed - Oerrs 50, board RX 0; docs 7.18)
 usb_gadget() {
     mkdir -p /sys/kernel/config
     mount -t configfs configfs /sys/kernel/config 2>/dev/null
@@ -72,25 +73,27 @@ usb_gadget() {
     mkdir -p $g/strings/0x409 $g/configs/c.1/strings/0x409 || return 1
     echo 0x1d6b > $g/idVendor          # Linux Foundation
     echo 0x0104 > $g/idProduct         # Multifunction Composite Gadget
-    echo 0xEF > $g/bDeviceClass        # IAD, so hosts bind ACM and NCM separately
+    echo 0xEF > $g/bDeviceClass        # IAD, so hosts bind ACM and ECM separately
     echo 0x02 > $g/bDeviceSubClass
     echo 0x01 > $g/bDeviceProtocol
     cat /sys/devices/soc0/serial_number > $g/strings/0x409/serialnumber 2>/dev/null ||
         echo e850-96 > $g/strings/0x409/serialnumber
     echo "OSDA" > $g/strings/0x409/manufacturer
     echo "E850-96 Linux" > $g/strings/0x409/product
-    echo "ACM+NCM" > $g/configs/c.1/strings/0x409/configuration
-    for f in acm.usb0 ncm.usb0; do
+    echo "ACM+ECM" > $g/configs/c.1/strings/0x409/configuration
+    for f in acm.usb0 ecm.usb0; do
         mkdir -p $g/functions/$f && ln -s $g/functions/$f $g/configs/c.1/ 2>/dev/null
     done
     echo "$udc" > $g/UDC || { log "cannot bind gadget to $udc"; return 1; }
-    log "USB gadget on $udc (ACM $GS, NCM usb0)"
+    log "USB gadget on $udc (ACM $GS, ECM usb0)"
 }
 
 # Respawning shell on the ACM port, in the background
 gs_shell_loop() {
     while true; do
-        [ -c $GS ] && setsid -c sh <$GS >$GS 2>&1 &
+        # the Mac enumerates the gadget only ~40 s after boot (usb_notify "booting delay")
+        until grep -qx configured /sys/class/udc/*/state 2>/dev/null; do sleep 1; done
+        [ -c /dev/ttyGS0 ] && setsid -c sh </dev/ttyGS0 >/dev/ttyGS0 2>&1 &
         echo $! > /tmp/gs-shell.pid
         wait $!
         sleep 1
@@ -118,14 +121,14 @@ case " $(cat /proc/cmdline) " in *" e850.nousb "*) NOUSB=1 ;; esac
 [ -z "$NOUSB" ] && { modprobe e850-vbus 2>/tmp/err || log "e850-vbus: $(cat /tmp/err)"; }
 udc_ok=
 i=0
-[ -n "$NOUSB" ] && i=20
-while [ $i -lt 20 ]; do
+[ -n "$NOUSB" ] && i=10
+while [ $i -lt 10 ]; do
     st=$(cat /sys/class/udc/*/state 2>/dev/null)
     log "udc state: $st ($i s)"
     [ "$st" = configured ] && { udc_ok=1; break; }
     sleep 1; i=$((i + 1))
 done
-[ -n "$udc_ok" ] || { log "USB host did not configure the gadget: no shell on $GS"; GS=/nonexistent; }
+[ -n "$udc_ok" ] || { log "gadget not configured yet: no rescue prompt; the shell starts on $GS once it is"; GS=/nonexistent; }
 
 rescue=
 if [ -c $GS ]; then
@@ -137,8 +140,8 @@ if [ -n "$rescue" ]; then
     ( exec setsid -c sh <$GS >$GS 2>&1 )
 fi
 
-gs_shell_loop &
-LOOP=$!
+LOOP=
+[ -z "$NOUSB" ] && { gs_shell_loop & LOOP=$!; }
 
 # Debug switches on the kernel command line (docs 7.16):
 #   e850.stage2=N   load only the first N entries of modules.load (bisecting a reset)
@@ -172,11 +175,13 @@ done
 if [ -n "$root$label" ]; then
     log "waiting for ${root:-PARTLABEL=$label}"
     i=0
-    while [ $i -lt 100 ]; do
+    while [ $i -lt 300 ]; do
         [ -n "$label" ] && root=$(part-dev "$label" 2>/dev/null)
         [ -n "$root" ] && [ -b "$root" ] && break
         sleep 0.1; i=$((i + 1))
     done
+    # userdata is mmcblk0p24 on this board (GPT); used if the name lookup failed
+    [ -b "$root" ] || { log "no ${root:-PARTLABEL=$label}; trying /dev/mmcblk0p24"; root=/dev/mmcblk0p24; }
     if mount -t ext4 -o rw "$root" /newroot 2>/tmp/err &&
        { [ -L /newroot/sbin/init ] || [ -x /newroot/sbin/init ]; }; then   # Debian: absolute symlink
         if [ -n "$NOSWITCH" ]; then

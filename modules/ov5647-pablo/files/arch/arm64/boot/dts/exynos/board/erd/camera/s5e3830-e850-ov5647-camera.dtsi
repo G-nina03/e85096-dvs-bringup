@@ -28,6 +28,12 @@
 	status = "okay";
 
 	power_seq {
+		/* use = <1>: take the power sequence from here. Without it the framework calls the
+		 * sensor module's dt callback, which a CIS-only driver does not have: NULL ->
+		 * "sensor dt callback is NULL", then an oops in sensor_module_probe (docs 7.18). */
+		use = <1>;
+		gpio_mclk = <&gpc0 2 0x1>;
+
 		scenario_normal_on {
 			sensor_scenario = <SENSOR_SCENARIO_NORMAL>;
 			gpio_scenario = <GPIO_SCENARIO_ON>;
