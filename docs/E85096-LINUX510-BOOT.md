@@ -554,3 +554,36 @@ busybox `reboot`는 인자를 넘길 수 없어서 `reboot(2)` RESTART2를 직�
 ```bash
 rebootarg bootloader     # 보드 셸에서
 ```
+
+### 7.15 시험 6 — 쪼갠 rootfs 굽기 성공, 그런데 사용자 공간이 `ttySAC0`을 여는 순간 보드가 멈춤
+
+```text
+[  162.875454 ] partition 'userdata' flashed                     ← resparse.py 덕분에 끝까지 기록
+...
+[    5.453778] mmcblk0: mmc0:0001 DP6DAB 58.2 GiB
+[    5.578094] [init] .../modules.stage1: 14 ok, 0 failed
+[    5.588193]  mmcblk0: p1 p5 p12 p13 p14 p15 p16 p17 p18 p19 p20 p21 p22 p24
+[    5.604615] [0: busybox: 1] exynos-uart 13820000.uart:  Clock rate : 199875000   ← init이 ttySAC0 open
+(이후 UART 출력 없음. 9600~921600 baud 모두 0바이트)
+```
+
+- 1단계 모듈은 모두 올라왔고 eMMC 파티션도 정상이다.
+- 커널 콘솔로서의 `ttySAC0`은 정상이었다. 4.2초에 `console [ttySAC0] enabled` 이후에도 로그가 이어졌다.
+- 그런데 **사용자 공간이 `/dev/ttySAC0`을 여는 순간**(uart startup → threaded IRQ 등록 → set_termios) 출력이 끊기고 시스템이 멈췄다.
+- 원래 BSP의 bootargs는 `console=ram`이다. 즉 Android 13 BSP는 이 UART를 tty 콘솔로 쓰지 않는다.
+
+**바꾼 구조** (UART는 커널 로그 전용, 로그인은 USB):
+
+| 항목 | 전 | 후 |
+|---|---|---|
+| 커널 콘솔 | `console=ttySAC0,115200n8` | `console=ram keep_bootcon` + earlycon. earlycon이 부팅 내내 UART로 출력 |
+| `exynos_tty.ko` | 1단계에서 적재 | 적재하지 않음(`autoload.deny`) |
+| 셸, 구조 셸 | UART | **USB ACM 가젯** `/dev/ttyGS0` → 맥 `/dev/cu.usbmodem*` |
+| 네트워크 | 없음 | **USB NCM 가젯** `usb0`. 보드 192.168.7.1, DHCP로 맥에 주소 배정 → `ssh e850@192.168.7.1` |
+| Debian getty | `serial-getty@ttySAC0` | `serial-getty@ttyGS0` (root 자동 로그인), ttySAC0은 mask |
+| 멈췄을 때 | 영원히 정지 | **하드웨어 워치독**: busybox `watchdog -T 60 -t 5`. 사용자 공간이 멈추면 60초 뒤 리셋 |
+| fastboot 진입 | 버튼, 우연 | `rebootarg bootloader` (`to-fastboot`이 호출) |
+
+USB 가젯은 configfs로 init이 직접 만든다(VID 0x1d6b, PID 0x0104, `acm.usb0` + `ncm.usb0`). 커널 설정에 `CONFIG_USB_CONFIGFS_ACM=y`, `CONFIG_USB_CONFIGFS_NCM=y`가 이미 들어 있다. `switch_root` 뒤에도 가젯은 그대로 남고, Debian의 getty가 `ttyGS0`을 넘겨받는다.
+
+1단계 모듈에 `s3c2410_wdt`, `phy-exynos-usbdrd-super`, `usb_notify_layer`, `usb_notifier`, `s2m_pdic_module`, `dwc3-exynos-usb`를 더했다.

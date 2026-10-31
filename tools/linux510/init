@@ -5,12 +5,17 @@
 # initramfs plays the role of Android's vendor_boot: load every module in
 # modules.load order, then switch to the root filesystem given by root=.
 #
-# Stage 1 loads only what the UART, the eMMC and reboot need (modules.stage1).
-# Then it waits 5 s on the UART: press Enter for a rescue shell before the
-# remaining modules are loaded. The rescue shell has `restore-android`
-# (writes the stock Android 10 boot image back to the boot partition) and
-# `to-fastboot` (next reboot stops in LK fastboot).
-# If no root is given or it cannot be mounted, a shell is started on the UART.
+# Stage 1 loads only what the eMMC, reboot, the watchdog and the USB device
+# port need (modules.stage1). Then a USB gadget (ACM serial + NCM network)
+# is set up on the USB-C port; on the Mac the shell is /dev/cu.usbmodem*.
+# The debug UART (ttySAC0) carries kernel messages only: opening it from user
+# space hung the board (see docs/E85096-LINUX510-BOOT.md 7.15).
+#
+# After the gadget is up, init waits 10 s on the ACM port: press Enter for a
+# rescue shell before the remaining modules are loaded. The shell has
+# `restore-android` (writes the stock Android 10 boot image back) and
+# `rebootarg bootloader` (next boot stops in LK fastboot).
+# If no root is given or it cannot be mounted, a shell runs on the ACM port.
 # This script never exits: PID 1 exiting panics the kernel.
 
 /bin/busybox --install -s /bin
@@ -27,18 +32,14 @@ if ! mount -t devtmpfs devtmpfs /dev 2>/dev/null; then
     echo /bin/mdev > /proc/sys/kernel/hotplug
     MDEV=1
 fi
-# No console driver is registered yet (exynos_tty is a module), so opening /dev/console fails
-# with ENODEV, and a failed `exec` redirection would end this shell. Test in a subshell first.
-if (exec </dev/console >/dev/console) 2>/dev/null; then
-    exec </dev/console >/dev/console 2>&1
-else
-    exec </dev/null >/dev/null 2>&1
-fi
+# Never open /dev/console here: it is the debug UART once exynos_tty is loaded.
+exec </dev/null >/dev/null 2>&1
 
 log() { echo "[init] $*" > /dev/kmsg; }
 
 KVER=$(uname -r)
 MODDIR=/lib/modules/$KVER
+GS=/dev/ttyGS0
 
 load_list() {
     n=0; fail=0
@@ -55,29 +56,67 @@ load_list() {
     log "$1: $n ok, $fail failed"
 }
 
-uart_shell() {
-    for tty in /dev/ttySAC0 /dev/console; do
-        if [ -c "$tty" ]; then
-            # in a child: setsid then needs no fork, so PID 1 really waits
-            ( exec setsid -c sh <$tty >$tty 2>&1 )
-            return
-        fi
+# USB gadget through configfs: acm.usb0 -> /dev/ttyGS0, ncm.usb0 -> network interface usb0
+usb_gadget() {
+    mkdir -p /sys/kernel/config
+    mount -t configfs configfs /sys/kernel/config 2>/dev/null
+    i=0
+    while [ -z "$(ls /sys/class/udc 2>/dev/null)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+    if [ -z "$udc" ]; then
+        log "no USB device controller (/sys/class/udc empty)"
+        return 1
+    fi
+    g=/sys/kernel/config/usb_gadget/e850
+    mkdir -p $g/strings/0x409 $g/configs/c.1/strings/0x409 || return 1
+    echo 0x1d6b > $g/idVendor          # Linux Foundation
+    echo 0x0104 > $g/idProduct         # Multifunction Composite Gadget
+    echo 0xEF > $g/bDeviceClass        # IAD, so hosts bind ACM and NCM separately
+    echo 0x02 > $g/bDeviceSubClass
+    echo 0x01 > $g/bDeviceProtocol
+    cat /sys/devices/soc0/serial_number > $g/strings/0x409/serialnumber 2>/dev/null ||
+        echo e850-96 > $g/strings/0x409/serialnumber
+    echo "OSDA" > $g/strings/0x409/manufacturer
+    echo "E850-96 Linux" > $g/strings/0x409/product
+    echo "ACM+NCM" > $g/configs/c.1/strings/0x409/configuration
+    for f in acm.usb0 ncm.usb0; do
+        mkdir -p $g/functions/$f && ln -s $g/functions/$f $g/configs/c.1/ 2>/dev/null
     done
-    sleep 60
+    echo "$udc" > $g/UDC || { log "cannot bind gadget to $udc"; return 1; }
+    log "USB gadget on $udc (ACM $GS, NCM usb0)"
+}
+
+# Respawning shell on the ACM port, in the background
+gs_shell_loop() {
+    while true; do
+        [ -c $GS ] && setsid -c sh <$GS >$GS 2>&1 &
+        echo $! > /tmp/gs-shell.pid
+        wait $!
+        sleep 1
+    done
 }
 
 log "kernel $KVER, stage 1 modules"
 load_list $MODDIR/modules.stage1
+# Hardware watchdog: busybox pings it every 5 s. If the whole system hangs, the SoC resets
+# after 60 s instead of staying halted (and LK may then stop in fastboot: "Abnormal RST_STAT").
+if [ -c /dev/watchdog ]; then
+    watchdog -T 60 -t 5 /dev/watchdog && log "watchdog started (60 s)"
+fi
+usb_gadget
 
 rescue=
-if [ -c /dev/ttySAC0 ]; then
-    echo "[init] press Enter within 5 s for a rescue shell" > /dev/ttySAC0
-    read -t 5 rescue < /dev/ttySAC0 && rescue=1
+if [ -c $GS ]; then
+    echo "[init] press Enter within 10 s for a rescue shell" > $GS
+    read -t 10 rescue < $GS && rescue=1
 fi
 if [ -n "$rescue" ]; then
-    log "rescue shell (exit to continue booting)"
-    uart_shell
+    log "rescue shell on $GS (exit to continue booting)"
+    ( exec setsid -c sh <$GS >$GS 2>&1 )
 fi
+
+gs_shell_loop &
+LOOP=$!
 
 log "stage 2 modules"
 load_list $MODDIR/modules.load
@@ -101,6 +140,9 @@ if [ -n "$root$label" ]; then
     done
     if mount -t ext4 -o rw "$root" /newroot 2>/tmp/err && [ -x /newroot/sbin/init ]; then
         log "switching to $root"
+        # the gadget stays bound; the Debian getty takes over $GS
+        kill $LOOP $(cat /tmp/gs-shell.pid 2>/dev/null) 2>/dev/null
+        umount /sys/kernel/config 2>/dev/null
         mount --move /dev /newroot/dev
         umount /proc /sys /tmp
         exec switch_root /newroot /sbin/init
@@ -108,8 +150,5 @@ if [ -n "$root$label" ]; then
     log "cannot use $root: $(cat /tmp/err)"
 fi
 
-log "no root filesystem, starting shell"
-while true; do
-    uart_shell
-    log "shell exited, restarting"
-done
+log "no root filesystem; shell stays on $GS"
+while true; do sleep 3600; done

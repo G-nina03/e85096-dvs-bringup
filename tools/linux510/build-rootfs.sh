@@ -6,7 +6,8 @@
 #       ubuntu:22.04 sh /t/build-rootfs.sh
 #
 # Output: /out/rootfs.simg  -> fastboot flash userdata rootfs.simg   (userdata = mmcblk0p24)
-# Login : serial console ttySAC0 logs in as root automatically; user "e850", password "e850".
+# Login : USB serial (Mac: /dev/cu.usbmodem*) logs in as root automatically;
+#         ssh e850@192.168.7.1 over the USB network; user "e850", password "e850".
 set -eu
 SIZE=${SIZE:-3G}
 R=/tmp/rootfs
@@ -23,14 +24,37 @@ echo e850-96 > $R/etc/hostname
 printf '127.0.0.1\tlocalhost\n127.0.1.1\te850-96\n' > $R/etc/hosts
 printf 'LABEL=rootfs\t/\text4\tdefaults,noatime\t0\t1\n' > $R/etc/fstab
 
-# Serial console: autologin as root on the UART
-mkdir -p $R/etc/systemd/system/serial-getty@ttySAC0.service.d
-cat > $R/etc/systemd/system/serial-getty@ttySAC0.service.d/autologin.conf <<'EOF'
+# Login: USB ACM gadget (ttyGS0, set up by the initramfs), autologin as root.
+# The debug UART (ttySAC0) is kernel messages only: a getty on it hung the board
+# (docs/E85096-LINUX510-BOOT.md 7.15), so its getty is masked.
+mkdir -p $R/etc/systemd/system/serial-getty@ttyGS0.service.d
+cat > $R/etc/systemd/system/serial-getty@ttyGS0.service.d/autologin.conf <<'EOT'
 [Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin root --keep-baud 115200 %I $TERM
-EOF
-chroot $R systemctl enable serial-getty@ttySAC0.service
+EOT
+chroot $R systemctl enable serial-getty@ttyGS0.service
+chroot $R systemctl mask serial-getty@ttySAC0.service
+
+# Network over the USB NCM gadget: the board is 192.168.7.1 and hands the Mac an address
+mkdir -p $R/etc/systemd/network
+cat > $R/etc/systemd/network/10-usb0.network <<'EOT'
+[Match]
+Name=usb0
+
+[Network]
+Address=192.168.7.1/24
+DHCPServer=yes
+
+[DHCPServer]
+PoolOffset=10
+PoolSize=10
+EmitDNS=no
+EOT
+chroot $R systemctl enable systemd-networkd.service
+
+# Helper: reboot into LK fastboot (busybox/systemd reboot cannot pass "bootloader" reliably)
+install -m 755 /t/rebootarg/rebootarg $R/usr/local/sbin/rebootarg
 
 # Student account
 chroot $R useradd -m -s /bin/bash -G sudo,video,i2c e850 2>/dev/null || chroot $R useradd -m -s /bin/bash -G sudo,video e850
