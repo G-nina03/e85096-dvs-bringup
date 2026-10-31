@@ -495,3 +495,62 @@ initramfs 안의 `restore/boot-android10.img.gz`를 풀면 원본 boot와 같은
 3. UART에서 `[init] press Enter within 5 s` → Enter → 구조 셸에서 `ls /dev/mmcblk*`, `lsmod` 확인 → `exit`로 계속 부팅.
 4. Debian 로그인(`root` 자동 로그인 또는 `e850`/`e850`).
 5. 문제가 생기면 구조 셸에서 `restore-android`.
+
+### 7.12 시험 4 — fbmini로 굽기: boot는 성공, userdata는 LK가 1 GiB FILL에서 멈춤
+
+전원 재투입 때 Volume Up을 10초 누르고 있었더니 LK가 fastboot에 들어갔다. 다만 키 때문은 아니었다. 키는 10번 모두 `1`로 읽혔고, LK가 밝힌 진입 사유는 아래와 같다.
+
+```text
+[    9.150847 ] Entering fastboot: Abnormal RST_STAT: 0x10000000
+```
+
+굽기 결과:
+
+```text
+$ ./fbmini flash boot out-root/boot.img
+> download:03dc5800   < DATA03dc5800   < OKAY
+> flash:boot          < OKAY                 UART: partition 'boot' flashed
+$ ./fbmini flash userdata rootfs.simg
+... CHUNK TYPE FILL (lba: 11841560, sct: 1310712 ...)     ← 640 MiB까지는 처리
+... CHUNK TYPE FILL (lba: 13152280, sct: 2097144 ...)     ← 1 GiB에서 멈춤, USB도 끊김
+```
+
+해결은 `tools/linux510/resparse.py`다. FILL 청크를 32 MiB 이하로 쪼갠다. 풀어 낸 내용은 원본과 SHA-256이 같다(`585c5383...`).
+
+```bash
+python3 tools/linux510/resparse.py rootfs.simg rootfs-split.simg   # 35 chunks -> 113
+```
+
+### 7.13 시험 5 — 새 init이 0.03초 만에 종료
+
+```text
+[    2.299199] Run /init as init process
+[    2.354360] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000100
+```
+
+원인은 7.6절에서 추가한 `[ -c /dev/console ] && exec </dev/console ...`였다.
+
+- 노드는 있지만 콘솔 드라이버(`exynos_tty.ko`)가 아직 없어서 open이 실패한다.
+- **셸에서 `exec` 리다이렉트가 실패하면 셸 자체가 끝난다.**
+
+고친 방법: 서브셸에서 먼저 열어 보고(`if (exec </dev/console) 2>/dev/null`), 실패하면 `/dev/null`을 쓴다.
+
+검증은 arm64 Docker에서 initramfs를 chroot로 실행해서 했다. 20초 뒤에도 init이 살아 있었고, `[init] ... no root filesystem, starting shell`까지 진행했다.
+
+```bash
+docker run --rm --privileged -v "$PWD/out-root:/b:ro" ubuntu:22.04 sh -c \
+  'apt-get -qq update; apt-get -qq install -y cpio; mkdir /x && cd /x && gunzip -c /b/initramfs.cpio.gz | cpio -id
+   timeout 20 chroot /x /init </dev/null; echo rc=$?   # 124 = 아직 실행 중 = 정상'
+```
+
+**규칙:** 보드에 굽기 전에 initramfs를 컨테이너에서 한 번 실행해 본다. 보드에서 한 번 실패할 때마다 전원 재투입이 필요하다.
+
+### 7.14 `rebootarg` — 버튼 없이 fastboot로
+
+LK는 misc BCB를 무시한다. 7.8절 로그에 `Recovery: command: 32 bootonce-bootloader`가 있는데도 그대로 부팅했다. LK가 fastboot로 들어간 것은 재부팅 사유가 `reboot bootloader`였을 때다.
+
+busybox `reboot`는 인자를 넘길 수 없어서 `reboot(2)` RESTART2를 직접 부르는 244바이트 바이너리를 만들었다(`tools/linux510/rebootarg/`). 빌드는 i2crd와 같은 방식이다.
+
+```bash
+rebootarg bootloader     # 보드 셸에서
+```
