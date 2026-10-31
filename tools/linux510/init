@@ -7,7 +7,8 @@
 #
 # Stage 1 loads only what the eMMC, reboot, the watchdog and the USB device
 # port need (modules.stage1). Then a USB gadget (ACM serial + NCM network)
-# is set up on the USB-C port; on the Mac the shell is /dev/cu.usbmodem*.
+# is set up on the USB-C port and e850-vbus.ko reports VBUS (this board has
+# no PDIC chip that would); on the Mac the shell is /dev/cu.usbmodem*.
 # The debug UART (ttySAC0) carries kernel messages only: opening it from user
 # space hung the board (see docs/E85096-LINUX510-BOOT.md 7.15).
 #
@@ -100,10 +101,31 @@ log "kernel $KVER, stage 1 modules"
 load_list $MODDIR/modules.stage1
 # Hardware watchdog: busybox pings it every 5 s. If the whole system hangs, the SoC resets
 # after 60 s instead of staying halted (and LK may then stop in fastboot: "Abnormal RST_STAT").
-if [ -c /dev/watchdog ]; then
-    watchdog -T 60 -t 5 /dev/watchdog && log "watchdog started (60 s)"
+# The hardware limit is unknown (two clusters, cl1 multistage), so ping every second.
+case " $(cat /proc/cmdline) " in *" e850.nowdt "*) NOWDT=1 ;; esac
+if [ -c /dev/watchdog ] && [ -z "$NOWDT" ]; then
+    watchdog -T 30 -t 200ms /dev/watchdog &&
+        log "watchdog started: timeout $(cat /sys/class/watchdog/watchdog0/timeout 2>/dev/null) s," \
+            "max $(cat /sys/class/watchdog/watchdog0/max_timeout 2>/dev/null) s, ping 200 ms"
 fi
-usb_gadget
+# e850.nousb on the kernel command line: skip the USB gadget (debugging resets, docs 7.16)
+case " $(cat /proc/cmdline) " in *" e850.nousb "*) NOUSB=1 ;; esac
+[ -z "$NOUSB" ] && usb_gadget
+
+# No S2MU106 PDIC on the E850-96, so nothing reports VBUS; e850-vbus.ko does (modules/e850-vbus).
+# Until the host has configured the gadget the controller is clock-gated, and opening ttyGS0
+# hangs the bus. So ttyGS0 is used only once the UDC state is "configured".
+[ -z "$NOUSB" ] && { modprobe e850-vbus 2>/tmp/err || log "e850-vbus: $(cat /tmp/err)"; }
+udc_ok=
+i=0
+[ -n "$NOUSB" ] && i=20
+while [ $i -lt 20 ]; do
+    st=$(cat /sys/class/udc/*/state 2>/dev/null)
+    log "udc state: $st ($i s)"
+    [ "$st" = configured ] && { udc_ok=1; break; }
+    sleep 1; i=$((i + 1))
+done
+[ -n "$udc_ok" ] || { log "USB host did not configure the gadget: no shell on $GS"; GS=/nonexistent; }
 
 rescue=
 if [ -c $GS ]; then
@@ -118,8 +140,25 @@ fi
 gs_shell_loop &
 LOOP=$!
 
-log "stage 2 modules"
-load_list $MODDIR/modules.load
+# Debug switches on the kernel command line (docs 7.16):
+#   e850.stage2=N   load only the first N entries of modules.load (bisecting a reset)
+#   e850.noswitch   mount the root but stay here, log "alive" every 5 s, then after 60 s
+#                   reboot into LK fastboot (so the next test image can be flashed unattended)
+STAGE2=; NOSWITCH=
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        e850.stage2=*) STAGE2=${arg#e850.stage2=} ;;
+        e850.noswitch) NOSWITCH=1 ;;
+    esac
+done
+if [ -n "$STAGE2" ]; then
+    head -n "$STAGE2" $MODDIR/modules.load > /tmp/modules.stage2
+    log "stage 2 modules: first $STAGE2, last one $(tail -n 1 /tmp/modules.stage2)"
+else
+    cp $MODDIR/modules.load /tmp/modules.stage2
+    log "stage 2 modules"
+fi
+load_list /tmp/modules.stage2
 
 # root=/dev/mmcblkXpN or root=PARTLABEL=<GPT name> (does not depend on mmcblk numbering)
 root=; label=
@@ -138,7 +177,16 @@ if [ -n "$root$label" ]; then
         [ -n "$root" ] && [ -b "$root" ] && break
         sleep 0.1; i=$((i + 1))
     done
-    if mount -t ext4 -o rw "$root" /newroot 2>/tmp/err && [ -x /newroot/sbin/init ]; then
+    if mount -t ext4 -o rw "$root" /newroot 2>/tmp/err &&
+       { [ -L /newroot/sbin/init ] || [ -x /newroot/sbin/init ]; }; then   # Debian: absolute symlink
+        if [ -n "$NOSWITCH" ]; then
+            log "mounted $root ($(ls /newroot | wc -l) entries); e850.noswitch: staying here"
+            i=0
+            while [ $i -lt 60 ]; do sleep 5; i=$((i + 5)); log "alive ${i} s"; done
+            log "test done: rebooting into LK fastboot"
+            sync; rebootarg bootloader
+            while true; do sleep 5; done
+        fi
         log "switching to $root"
         # the gadget stays bound; the Debian getty takes over $GS
         kill $LOOP $(cat /tmp/gs-shell.pid 2>/dev/null) 2>/dev/null

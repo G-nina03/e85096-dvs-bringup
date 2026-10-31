@@ -31,6 +31,8 @@ mkdir -p $R/etc/systemd/system/serial-getty@ttyGS0.service.d
 cat > $R/etc/systemd/system/serial-getty@ttyGS0.service.d/autologin.conf <<'EOT'
 [Service]
 ExecStart=
+# opening ttyGS0 before the host has configured the gadget hangs the board (init comment)
+ExecStartPre=/bin/sh -c 'until grep -qx configured /sys/class/udc/*/state; do sleep 1; done'
 ExecStart=-/sbin/agetty --autologin root --keep-baud 115200 %I $TERM
 EOT
 chroot $R systemctl enable serial-getty@ttyGS0.service

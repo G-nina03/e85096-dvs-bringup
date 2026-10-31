@@ -64,7 +64,9 @@ fdtoverlay -i $DTS/s5e3830.dtb -o /out/merged.dtb $DTS/board/erd/s5e3830-erd3830
 # Kernel messages go out through earlycon only (keep_bootcon keeps it after boot); there is no
 # tty console (console=ram, as in the BSP), because opening ttySAC0 from user space hung the
 # board (docs 7.15). The login is the USB ACM gadget instead.
-CMDLINE="console=ram keep_bootcon earlycon=exynos4210,mmio32,0x13820000 maxcpus=1 clocksource=arch_sys_counter clk_ignore_unused printk.devkmsg=on loglevel=8 ignore_loglevel firmware_class.path=/lib/firmware $ROOTARG"
+# cpuidle.off=1: without Android's exynos-cpupm setup, the first CPU idle entry hung the SoC
+# (docs 7.17: 6 s with stage-1 modules, right after the last module with all of them).
+CMDLINE="console=ram keep_bootcon earlycon=exynos4210,mmio32,0x13820000 cpuidle.off=1 maxcpus=1 clocksource=arch_sys_counter clk_ignore_unused printk.devkmsg=on loglevel=8 ignore_loglevel firmware_class.path=/lib/firmware $ROOTARG"
 # The stock bootargs also start the watchdog at boot (s3c2410_wdt.tmr_atboot=1); without
 # Android's watchdogd nobody pings it, so it is left out here.
 fdtput -t s /out/merged.dtb /chosen bootargs "$CMDLINE"

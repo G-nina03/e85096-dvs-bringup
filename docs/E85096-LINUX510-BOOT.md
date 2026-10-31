@@ -587,3 +587,44 @@ rebootarg bootloader     # 보드 셸에서
 USB 가젯은 configfs로 init이 직접 만든다(VID 0x1d6b, PID 0x0104, `acm.usb0` + `ncm.usb0`). 커널 설정에 `CONFIG_USB_CONFIGFS_ACM=y`, `CONFIG_USB_CONFIGFS_NCM=y`가 이미 들어 있다. `switch_root` 뒤에도 가젯은 그대로 남고, Debian의 getty가 `ttyGS0`을 넘겨받는다.
 
 1단계 모듈에 `s3c2410_wdt`, `phy-exynos-usbdrd-super`, `usb_notify_layer`, `usb_notifier`, `s2m_pdic_module`, `dwc3-exynos-usb`를 더했다.
+
+### 7.16 USB 가젯 — E850-96에는 PDIC가 없다 (`modules/e850-vbus`)
+
+```text
+s2mu106_charger_set_mode: S2MU106_CHG_CTRL0 = 0xff      ← ERD3830의 충전/PDIC 칩. 이 보드에는 없음
+dwc3_gadget_pullup: current_dr_role = 255               ← 컨트롤러가 device 역할로 바뀌지 않음
+```
+
+이 커널의 DT는 ERD3830 레퍼런스 보드용이다. 케이블 연결(VBUS)은 S2MU106 PDIC → `usb_notifier` → `dwc3_exynos_vbus_event()`로 들어온다. E850-96에는 이 칩이 없어서 이벤트가 오지 않고, DWC3는 클록이 꺼진 채 남는다.
+
+`e850-vbus.ko`를 만들었다. 적재되면 `dwc3_exynos_vbus_event(dev, true)`를 한 번 부른다. init은 이것을 적재한 뒤 UDC 상태가 `configured`가 될 때까지 기다리고, 그때만 `ttyGS0`을 쓴다.
+
+```text
+e850-vbus: VBUS on for 13600000.usb: 0
+dwc3 13600000.dwc3: Turn on gadget dwc3-gadget
+phy_exynos_usbdrd 135d0000.phy: Turn on LDO
+__dwc3_gadget_start ---
+dwc3_otg_start_gadget: start check usb configuration timer
+```
+
+### 7.17 진짜 원인 — 첫 CPU idle 진입에서 SoC가 멈춘다 (`cpuidle.off=1`)
+
+7.15~7.16의 "UART를 열면 멈춤", "가젯 시작 후 리셋", "루트 마운트 때 리셋"은 모두 같은 현상이었다. 워치독(`watchdog -T 30 -t 200ms`)을 켜면 멈춤이 리셋으로 바뀌고, LK는 `Entering fastboot: Abnormal RST_STAT: 0x1000000`으로 fastboot에 들어간다. 이 덕분에 사람 손 없이 이분 탐색을 할 수 있었다(`cycle.sh`: 빌드 → `fbmini` 굽기 → 재부팅 → 판정).
+
+| 커널 인자 (공통: `e850.nousb e850.noswitch`) | 결과 |
+|---|---|
+| 2단계 전부 | 모듈 91개 적재 직후 리셋 (11.6초) |
+| `e850.stage2=0` | 6.2초에 리셋 (루트 마운트는 성공) |
+| `e850.stage2=0 e850.nowdt` | 리셋 없이 멈춤 → 워치독은 원인 아님 |
+| `e850.stage2=0 cpuidle.off=1` | **60초 이상 생존** |
+
+init이 일을 마치고 CPU가 처음 idle에 들어가는 순간 멈췄다. 모듈을 적재하는 동안에는 CPU가 바빠서 버텼다. Android에서는 `exynos-cpupm` 등이 idle 상태와 웨이크업을 먼저 설정해 둔다. 여기서는 일단 `cpuidle.off=1`로 idle 진입을 끈다(전력 소모는 늘어남).
+
+시험용 커널 인자 정리:
+
+| 인자 | 뜻 |
+|---|---|
+| `e850.nousb` | USB 가젯·VBUS 생략 |
+| `e850.stage2=N` | 2단계 모듈 앞 N개만 적재 |
+| `e850.noswitch` | 루트 마운트 후 Debian으로 넘어가지 않음. 60초 동안 `alive` 로그를 찍은 뒤 `rebootarg bootloader`로 fastboot 복귀 |
+| `e850.nowdt` | 워치독 끔 (멈추면 전원 재투입 필요) |
