@@ -997,3 +997,19 @@ ping -c 2 8.8.8.8 && ping -c 1 deb.debian.org
 2. **DNS.** minbase rootfs에는 systemd-resolved가 없다. `/etc/resolv.conf`에는 Docker 빌드 때 쓰던 `192.168.65.7`이 남아 있었다. 게이트웨이와 `8.8.8.8`로 바꿨다.
 
 암호는 보드의 `/etc/wpa_supplicant/wpa_supplicant-wlan0.conf`에 PSK 해시로만 남고, 저장소에는 넣지 않는다. 이제 보드에서 `apt-get install`이 바로 된다.
+
+### 10.5 부팅할 때 자동 연결 (`tools/linux510/e850-wifi.service`)
+
+`e850-wifi.sh SSID 암호`를 한 번 실행해 접속 정보를 저장한 뒤, 서비스를 설치합니다.
+서비스는 `e850-wifi.sh up`을 실행합니다. 이 명령은 드라이버를 올리고 wlan0을 켠 다음,
+저장된 네트워크(`/etc/wpa_supplicant/wpa_supplicant-wlan0.conf`)에 다시 접속합니다.
+접속 정보가 없으면 서비스는 실행되지 않습니다.
+
+```sh
+cp e850-wifi.sh /usr/local/bin/ && chmod 755 /usr/local/bin/e850-wifi.sh
+cp e850-wifi.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable e850-wifi
+```
+
+확인 결과: 재부팅하고 약 1분 뒤 `systemctl is-active e850-wifi` → `active`.
+wlan0은 DHCP로 192.168.0.236을 받았고, `ping 8.8.8.8`이 응답했습니다.

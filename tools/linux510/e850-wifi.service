@@ -1,0 +1,15 @@
+# Load the Maxwell Wi-Fi driver at boot and rejoin the network saved by `e850-wifi.sh SSID PASS`.
+#   cp e850-wifi.sh /usr/local/bin/; cp e850-wifi.service /etc/systemd/system/
+#   systemctl enable e850-wifi
+[Unit]
+Description=Exynos 850 on-chip Wi-Fi (Maxwell mx140)
+After=local-fs.target
+ConditionPathExists=/etc/wpa_supplicant/wpa_supplicant-wlan0.conf
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/e850-wifi.sh up
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,8 @@
 #   e850-wifi.sh                     load driver, wlan0 up, scan
 #   e850-wifi.sh SSID PASSWORD       also write /etc/wpa_supplicant/wpa_supplicant-wlan0.conf,
 #                                    start wpa_supplicant@wlan0 and DHCP (systemd-networkd)
+#   e850-wifi.sh up                  driver + wlan0 up, rejoin the saved network (used at boot by
+#                                    e850-wifi.service)
 # Firmware: /vendor/etc/wifi (from the Android vendor image, tools/linux510/wifi-fw-extract.sh).
 # The driver asks request_firmware() for "../etc/wifi/mx140.bin", i.e. /lib/firmware/../etc/wifi,
 # so /lib/firmware must exist and /lib/etc/wifi points at /vendor/etc/wifi.
@@ -14,6 +16,10 @@ modprobe scsc_mx
 modprobe scsc_wlan
 for i in 1 2 3 4 5; do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
 ip link set wlan0 up          # downloads mx140.bin and boots the WLBT core
+if [ "$1" = up ]; then
+    systemctl restart systemd-networkd wpa_supplicant@wlan0
+    exit 0
+fi
 if [ $# -lt 2 ]; then
     iw dev wlan0 scan | sed -n 's/^\tSSID: //p; s/^\tsignal: /  /p' | paste - - | sort -k2 -n
     exit 0
