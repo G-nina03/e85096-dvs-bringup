@@ -7,6 +7,7 @@ Status: Work in Progress / Experimental
 
 ## Start Here: Linux Migration and Student Forks (2026-10-26)
 
+- [Exynos850 C2 / cpuidle 장애 참고 메모 (2026-11-02)](docs/E85096-C2-CPUIDLE-REFERENCE-20261102.md): 관찰 사실과 외부 Linaro 패치의 참고 근거만 기록한 문서. 작업 지시나 변경 요청 아님.
 - [OV5647 개발 후속 상태: Chip ID 확인, 벤더 5.10 + Debian 전략, Docker 및 Android 백업 진행](docs/E85096-OV5647-VENDOR510-DEBIAN-PLAN.md): MIPI/RAW10 미완료, boot0 읽기 중 재부팅 보고 및 백업 검증 조건.
 - [벤더 5.10 커널로 Linux 부팅하기 — 진행 매뉴얼](docs/E85096-LINUX510-BOOT.md): initramfs가 필요한 이유, boot.img v2 빌드(`tools/linux510`), RAM 부팅 시험 기록.
 - [OV5647 Chip ID 판독·CN4 신호 대응·백업 장애 원시 기록](docs/E85096-OV5647-CHIPID-RAW-LOG.md): `i2crd`로 `0x300A/B` → `56 47`, 회로도 기반 CN4→`/dev/i2c-8`·LDO32·GPG1[5], boot0 Oops 원본, macOS USB 독점 문제.
