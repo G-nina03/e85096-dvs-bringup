@@ -896,6 +896,54 @@ raw10-view.py /tmp/ov5647_2.raw                      # HDMI 가운데에 2배로
 2. 같은 부팅에서 스트림을 여러 번 열고 닫을 때의 CSIS 오류(`CSIS_ERR_LOST_FS_VC`) 뒤 리셋.
 3. 노출과 프레임 길이(VTS) 조정, 더 큰 모드(1296×972, 1920×1080).
 
+### 9.8 연속 스트리밍과 HDMI 실시간 영상 (`bypass.sh` 6b·7·8, `ov5647-cap.py --live`)
+
+9.7까지는 스트림 한 번에 3장에서 멈췄다. 원인은 두 가지였고, 각각 패치로 풀었다.
+
+**① leader 프레임이 끝나지 않는다 → 패치 7.** 프레임 끝(`is_sensor_notify_by_fend`)에서 leader 버퍼를 직접 완료한다.
+
+- 원래 코드는 `is_group_done()`을 부른다. 이 함수는 ischain 그룹과 메타데이터를 건드린다.
+- bypass에서는 이 함수를 부르지 않고 꼭 필요한 두 가지만 한다.
+  - shot 카운트를 올린다.
+  - `gtask->smp_resource` 세마포어를 돌려준다.
+
+**② VC0 버퍼가 다시 걸리지 않는다 → 패치 8.** ISP 없는 M2M 경로에서는 센서 **line 인터럽트**(14번째 줄)가 다음 프레임의 VC0 버퍼를 건다.
+
+- 이 경로는 `is_sensor_notify_by_line → is_devicemgr_shot_callback → is_sensor_group_tag → VC0 s_rx_buffer` 순서로 간다.
+- 그런데 leader 프레임을 `fcount == line_fcount`인 것으로 찾는다.
+- bypass에서는 두 카운터가 어긋난다. 그래서 매번 `(SENSOR LINE IRQ) There's no Shot`가 나고 VC0 DMA가 꺼졌다(`DMA off [0/0/3]`).
+- 패치 8은 찾지 못하면 "VC0가 아직 안 걸린, 가장 오래된 처리 중 leader 프레임"을 대신 쓴다.
+
+**③ 1 CPU에서 인터럽트를 놓친다 → 패치 6b.** VC0 서브디바이스에는 `leader`가 없다.
+
+- 그래서 `GET_SUBDEV_FRAMEMGR(NULL)`이 프레임마다 전체 백트레이스와 함께 WARN을 찍었다.
+- CPU가 하나뿐이라 그동안 CSIS 인터럽트를 놓쳤다(`interrupt lost`, `start/end overlapped`).
+- 패치 6b로 이 WARN이 나지 않게 했다.
+
+캡처 도구도 한 군데 고쳤다. 드라이버는 VC0 프레임을 버릴 때 메타의 `capture[].request`를 0으로 지운다. 그래서 leader 버퍼를 다시 넣을 때마다(QBUF) 메타를 새로 쓴다(`write_shot()`).
+
+결과는 다음과 같다.
+
+```bash
+modprobe fimc-is && modprobe is-cis-ov5647
+ov5647-cap.py -n 30                 # 30장 연속 (파일 저장, 초당 약 1.5장: 저장이 병목)
+ov5647-cap.py --live -n 200 -b 8    # HDMI 실시간: "live: 60 frames, 17.7 fps" ... 200장
+ov5647-cap.py --live                # Ctrl-C까지 계속
+```
+
+`--live`의 처리 방식은 다음과 같다.
+
+- BGGR 2×2 칸 하나를 RGB 한 점으로 바꾼다(320×240). 화면에는 4배로 키워 1280×960으로 그린다.
+- 채널별 LUT에 검정 레벨, 그레이월드 화이트밸런스, 자동 밝기, 감마 2.2를 넣는다. LUT는 30장마다 다시 계산한다.
+- numpy만 쓰고, `/dev/fb0` mmap에 직접 쓴다.
+- CPU 하나(A55)에서 초당 15~17장이 나온다. 센서는 60 fps로 돌기 때문에 남는 프레임은 버린다.
+
+**남은 문제:**
+
+1. 스트림을 켜는 순간 가끔 SoC가 멈춘다(첫 스트림 4번 중 2번). watchdog이 리셋해 fastboot로 돌아오며, 1 CPU라 마지막 커널 로그가 남지 않는다. 다음 시도는 `watchdog_thresh=4`와 `softlockup_panic=1`로 스택을 남기는 것이다.
+2. 같은 부팅에서 두 번째 스트림을 열면 한동안 돌다가 리셋된다.
+3. 카메라 모듈이 올라간 채로 재부팅하면 종료 단계에서 멈출 수 있다. 재부팅 전에 `rmmod`하거나 fastboot에서 `fbmini reboot`로 복구한다.
+
 ## 10. Wi-Fi — 칩 안의 Maxwell(Samsung SCSC) 무선랜
 
 Exynos 850에는 Wi-Fi/BT 코어(WLBT, "Maxwell" mx140)가 SoC 안에 들어 있다. 5.10 커널에는 드라이버가 이미 모듈로 빌드되어 있다(`scsc_mx.ko`, `scsc_platform_mif.ko`, `scsc_wlan.ko`). DT에도 `scsc_wifibt@119C0000` 노드가 있다. 없는 것은 **펌웨어**와 **사용자 공간 도구**뿐이다.

@@ -17,7 +17,9 @@ Sequence (each step was needed, see docs/E85096-LINUX510-BOOT.md 9.5-9.7):
 Buffers are dma-bufs from /dev/dma_heap/system-uncached (the Pablo QBUF path wants dma-buf fds).
 
     ov5647-cap.py [-W 640] [-H 480] [-n 5] [-o /tmp/ov5647]   -> /tmp/ov5647_<i>.raw
-Each file is one VC0 frame: packed RAW10, stride ALIGN(width*5/4, 16) (raw10-view.py shows it).
+Each file is one VC0 frame: one little-endian u16 per pixel, 10 valid bits (raw10-view.py shows it).
+
+    ov5647-cap.py --live [-n 0]      live video on HDMI (/dev/fb0) instead of files; -n 0 = forever
 """
 import argparse
 import ctypes
@@ -71,7 +73,10 @@ ap.add_argument('-B', type=int, default=16,
 ap.add_argument('-o', default='/tmp/ov5647')
 ap.add_argument('-t', type=float, default=3.0, help='timeout per frame, s')
 ap.add_argument('-v', action='store_true', help='log every ioctl in the loop')
+ap.add_argument('--live', action='store_true', help='draw every frame on /dev/fb0, save nothing')
 a = ap.parse_args()
+if a.live and a.n == 5:
+    a.n = 0
 
 heap = os.open('/dev/dma_heap/system-uncached', os.O_RDWR)
 
@@ -160,11 +165,17 @@ log('S_INPUT 0x%x, sensor size %dx%d, S_FMT BG10 on both nodes' % (INPUT, a.W, a
 ldr.reqbufs(a.B)
 vc0.reqbufs(a.b)
 
-for i, planes in enumerate(ldr.bufs):
-    meta = planes[-1][1]
+def write_shot(i):
+    """Shot meta of leader buffer i. Rewritten before every QBUF: the driver clears
+    capture[].request when it drops a VC0 frame, and a stale 0 stops VC0 for good."""
+    meta = ldr.bufs[i][-1][1]
     meta[SHOT_MAGIC_OFFSET:SHOT_MAGIC_OFFSET + 4] = struct.pack('<I', SHOT_MAGIC)
     node_entry(meta, NODE_GROUP, VID_SS1, a.W, a.H)                     # leader
     node_entry(meta, NODE_GROUP + NODE_SIZE, VID_SS1VC0, a.W, a.H)      # capture[0] = VC0
+
+
+for i in range(len(ldr.bufs)):
+    write_shot(i)
 for planes in vc0.bufs:
     planes[0][1][:4096] = b'\x5a' * 4096       # marker: still 0x5a after DQBUF = DMA never wrote
 
@@ -178,10 +189,63 @@ for i in range(len(ldr.bufs)):
 fcntl.ioctl(ldr.fd, VIDIOC_S_CTRL, struct.pack('Ii', CID_IS_S_STREAM, 1))
 log('queued, sensor stream on')
 
+class Live:
+    """Half-resolution demosaic (one RGB pixel per BGGR cell) through per-channel LUTs that hold
+    black level, grey-world white balance, auto gain and gamma; drawn centred on /dev/fb0."""
+
+    def __init__(self, w, h):
+        import numpy as np
+        self.np = np
+        self.w, self.h = w, h
+        fd = os.open('/dev/fb0', os.O_RDWR)
+        var = bytearray(160)
+        fcntl.ioctl(fd, 0x4600, var)                 # FBIOGET_VSCREENINFO
+        xres, yres, _, yv = struct.unpack_from('4I', var)
+        yoff = struct.unpack_from('I', var, 20)[0]
+        stride = int(open('/sys/class/graphics/fb0/stride').read())
+        self.fbmap = mmap.mmap(fd, stride * yv, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+        fb = np.frombuffer(self.fbmap, np.uint8).reshape(yv, stride)
+        self.scale = max(1, min(xres // (w // 2), yres // (h // 2)))
+        iw, ih = w // 2 * self.scale, h // 2 * self.scale
+        x0, y0 = (xres - iw) // 2, yoff + (yres - ih) // 2
+        self.win = fb[y0:y0 + ih, x0 * 4:(x0 + iw) * 4].reshape(ih, iw, 4)
+        self.luts = None
+        self.n = 0
+        self.t = time.time()
+
+    def update_luts(self, r, g, b):
+        np = self.np
+        means = [max(float(c.mean()) - 16, 1.0) for c in (r, g, b)]
+        top = max(float(np.percentile(g, 99.5)) - 16, 8.0)
+        v = np.clip(np.arange(1024, dtype=np.float32) - 16, 0, None)
+        self.luts = [(np.clip(v * (sum(means) / 3 / m) / top, 0, 1) ** (1 / 2.2) * 255).astype(np.uint8)
+                     for m in means]
+
+    def show(self, buf):
+        np = self.np
+        bayer = np.frombuffer(buf, '<u2', self.w * self.h).reshape(self.h, self.w) & 0x3ff
+        b = bayer[0::2, 0::2]
+        g = (bayer[0::2, 1::2] + bayer[1::2, 0::2]) >> 1
+        r = bayer[1::2, 1::2]
+        if self.luts is None or self.n % 30 == 0:  # white balance + gain every 30 frames
+            self.update_luts(r, g, b)
+        img = np.empty((self.h // 2, self.w // 2, 4), np.uint8)
+        img[..., 0], img[..., 1], img[..., 2], img[..., 3] = \
+            self.luts[2][b], self.luts[1][g], self.luts[0][r], 255     # XRGB8888 little endian: B G R X
+        s = self.scale
+        self.win[:] = img.repeat(s, 0).repeat(s, 1)
+        self.n += 1
+        if self.n % 30 == 0:
+            now = time.time()
+            log('live: %d frames, %.1f fps' % (self.n, 30 / (now - self.t)))
+            self.t = now
+
+
+live = Live(a.W, a.H) if a.live else None
 saved = 0
 t0 = last = time.time()
 try:
-    while saved < a.n:
+    while a.n == 0 or saved < a.n:
         # the OUTPUT (leader) fd can poll writable without a finished buffer: time out on the clock
         if time.time() - last > a.t:
             log('timeout: no VC0 frame in %.1f s' % a.t)
@@ -194,6 +258,7 @@ try:
                 a.v and log('ldr dqbuf')
                 idx, flags, _ = ldr.dqbuf()
                 a.v and log('ldr qbuf %d (flags 0x%x)' % (idx, flags))
+                write_shot(idx)
                 ldr.qbuf(idx)
             except BlockingIOError:
                 time.sleep(0.005)
@@ -201,6 +266,12 @@ try:
             try:
                 idx, flags, used = vc0.dqbuf()
             except BlockingIOError:
+                continue
+            if live:
+                live.show(vc0.bufs[idx][0][1])
+                saved += 1
+                last = time.time()
+                vc0.qbuf(idx)
                 continue
             data = vc0.bufs[idx][0][1][:]           # whole allocation (2x the plane) to see overruns
             name = '%s_%d.raw' % (a.o, saved)
@@ -214,6 +285,8 @@ try:
             a.v and log('vc0 qbuf %d' % idx)
             vc0.qbuf(idx)
             a.v and log('vc0 qbuf done')
+except KeyboardInterrupt:
+    log('interrupted')
 finally:
     try:
         fcntl.ioctl(ldr.fd, VIDIOC_S_CTRL, struct.pack('Ii', CID_IS_S_STREAM, 0))

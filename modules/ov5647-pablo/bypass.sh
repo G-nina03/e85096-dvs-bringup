@@ -56,6 +56,39 @@ grep -q 'bypass: untagged VC frame' $F || sed -i '/^static void csi_dma_tag(/,/^
 }' $F
 sed -n '/^static void csi_dma_tag(/,/CALL_VOPS(vctx, done/p' $F | grep -n 'bypass\|ldr_frame = \|findex\|clear_bit\|^\t\t\t}$'
 
-# (7. Completing the leader frame at frame end when there is no ischain - removing the
-#  "test_bit(IS_SENSOR_OTF_OUTPUT) -> skip" in is_sensor_notify_by_fend() - hung the SoC right
-#  after sensor start; not applied. The capture tool queues enough leader buffers instead.)
+# 6b. Same place: the VC0 DMA subdev used for an untagged frame has no ->leader, and
+#     GET_SUBDEV_FRAMEMGR(NULL) WARNs with a full backtrace on every frame. On one CPU that
+#     costs enough time to lose CSIS interrupts ("interrupt lost", "start/end overlapped").
+grep -q 'bypass: VC subdev without leader' $F || sed -i '/^static void csi_dma_tag(/,/^}/ {
+    s|^\t\t\tldr_framemgr = GET_SUBDEV_FRAMEMGR(f_subdev->leader);$|\t\t\tldr_framemgr = f_subdev->leader ? GET_SUBDEV_FRAMEMGR(f_subdev->leader) : NULL;\t/* bypass: VC subdev without leader */|
+}' $F
+grep -n 'bypass: VC subdev without leader' $F
+
+# 7. Sensor leader frame end (is_sensor_notify_by_fend). With IS_SENSOR_OTF_OUTPUT the 3AA group
+#    completes the leader frame later; without an ischain nobody does, the frame stays in
+#    FS_PROCESS and gtask->smp_resource is never given back: only 3 shots per stream.
+#    Complete the leader buffer here. Do NOT call is_group_done() for it: it walks the ischain
+#    groups and metadata (an earlier version of this patch that did hung the SoC); give back
+#    only the shot count and the resource semaphore.
+F=$C/is-device-sensor_v2.c
+grep -q 'bypass: leader done at frame end' $F || sed -i '/^static int is_sensor_notify_by_fend(/,/^}/ {
+    s|^\tif (test_bit(IS_SENSOR_OTF_OUTPUT, \&device->state))$|\tif (test_bit(IS_SENSOR_OTF_OUTPUT, \&device->state) \&\& device->ischain)\t/* bypass: leader done at frame end */|
+    s|^\t\tis_group_done(device->groupmgr, group, frame, done_state);$|\t\tif (device->ischain) {\n\t\t\tis_group_done(device->groupmgr, group, frame, done_state);\n\t\t} else {\t/* bypass: no ischain; shot count + resource only */\n\t\t\tatomic_inc(\&group->smp_shot_count);\n\t\t\tup(\&device->groupmgr->gtask[group->id].smp_resource);\n\t\t}|
+}' $F
+sed -n '/^static int is_sensor_notify_by_fend(/,/^}/p' $F | grep -n 'bypass\|smp_\|is_group_done'
+
+# 8. Arming VC0 for the next frame. In the M2M sensor path the sensor LINE interrupt finds the
+#    leader frame by fcount == device->line_fcount and tags it (is_devicemgr_shot_callback ->
+#    is_sensor_group_tag -> VC0 s_rx_buffer). Without an ISP the two counters drift apart
+#    ("(SENSOR LINE IRQ) There's no Shot"), nothing is tagged and VC0 DMA turns off after the
+#    first buffers. Fall back to the oldest processing leader frame whose VC0 is not armed yet.
+F=$C/is-device-sensor_v2.c
+grep -q 'bypass: leader fcount != line_fcount' $F || {
+    sed -i "/^static int is_sensor_notify_by_line(/,/^}/ { /(void \*)(ulong)device->line_fcount);\$/ { n; r $H/bypass-line-tag.inc
+} }" $F
+    # the helper goes right after is_sensor_notify_by_fend(), which precedes ..._by_line()
+    sed -i "/^static int is_sensor_notify_by_fend(/,/^}/ { /^}/ r $H/bypass-line-tag-fn.inc
+}" $F
+}
+sed -n '/^static ulong bypass_vc0_armed(/,/^}/p; /bypass: leader fcount != line_fcount/,/^\t}$/p' $F
+
