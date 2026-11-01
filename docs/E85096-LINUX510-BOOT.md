@@ -933,3 +933,19 @@ iw dev wlan0 scan                         # 주변 AP가 보이면 성공
 `slsi_read_regulatory: Failed to read regdb`와 `WLBTD not running` 경고는 나오지만 스캔은 된다.
 
 사용자 공간 도구는 `wpasupplicant`, `iw`, `libnl-*`, `libpcsclite1`, `wireless-regdb`다. 보드에 아직 네트워크가 없으므로 맥의 `debian:bookworm`(arm64) 컨테이너에서 `apt-get download`로 받는다. 받은 패키지는 `acmpush2.py`로 보내 `dpkg -i`로 설치했다. 접속은 `e850-wifi.sh SSID 암호`로 한다(wpa_supplicant@wlan0 + systemd-networkd DHCP).
+
+### 10.4 접속 성공 — DHCP와 DNS
+
+```bash
+e850-wifi.sh TP-Link_36D7 '<암호>'
+#  wpa_supplicant: Associated ... WPA: Key negotiation completed [PTK=CCMP GTK=CCMP]
+#  inet 192.168.0.236/24 ... dynamic wlan0      (5 GHz, ch149, -70 dBm)
+ping -c 2 8.8.8.8 && ping -c 1 deb.debian.org
+```
+
+처음 시도에서 걸린 두 가지는 다음과 같다(스크립트에 반영함).
+
+1. **`.network` 파일 권한.** 암호 파일 때문에 `umask 077`을 걸었더니 `20-wlan0.network`도 0600이 됐다. networkd는 `systemd-network` 사용자로 돌아서 `Permission denied`가 나고, wlan0이 `unmanaged`로 남았다. 암호 파일만 0600으로 만든다.
+2. **DNS.** minbase rootfs에는 systemd-resolved가 없다. `/etc/resolv.conf`에는 Docker 빌드 때 쓰던 `192.168.65.7`이 남아 있었다. 게이트웨이와 `8.8.8.8`로 바꿨다.
+
+암호는 보드의 `/etc/wpa_supplicant/wpa_supplicant-wlan0.conf`에 PSK 해시로만 남고, 저장소에는 넣지 않는다. 이제 보드에서 `apt-get install`이 바로 된다.

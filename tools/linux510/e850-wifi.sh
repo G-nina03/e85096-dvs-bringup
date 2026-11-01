@@ -19,11 +19,16 @@ if [ $# -lt 2 ]; then
     exit 0
 fi
 mkdir -p /etc/wpa_supplicant /etc/systemd/network
-umask 077
-{ echo "ctrl_interface=/run/wpa_supplicant"; wpa_passphrase "$1" "$2" | grep -v '#psk='; } \
-    > /etc/wpa_supplicant/wpa_supplicant-wlan0.conf
+# only the PSK file is private; networkd runs as systemd-network and must read its .network
+(umask 077
+ { echo "ctrl_interface=/run/wpa_supplicant"; wpa_passphrase "$1" "$2" | grep -v '#psk='; } \
+     > /etc/wpa_supplicant/wpa_supplicant-wlan0.conf)
 printf '[Match]\nName=wlan0\n\n[Network]\nDHCP=yes\n' > /etc/systemd/network/20-wlan0.network
-systemctl enable --now systemd-networkd
+# no systemd-resolved in the minbase rootfs: plain resolv.conf (gateway, then a public resolver)
+printf 'nameserver 192.168.0.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+systemctl enable --now systemd-networkd wpa_supplicant@wlan0
+networkctl reload
+networkctl reconfigure wlan0
 systemctl restart wpa_supplicant@wlan0
 for i in $(seq 30); do ip -4 addr show wlan0 | grep -q inet && break; sleep 1; done
 ip -4 addr show wlan0
