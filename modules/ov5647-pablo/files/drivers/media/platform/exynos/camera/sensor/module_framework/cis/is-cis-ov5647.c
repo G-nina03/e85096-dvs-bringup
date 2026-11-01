@@ -9,7 +9,8 @@
  *  - mode change: mainline Linux register tables (RAW10, 2 lanes), virtual channel 0
  *  - stream on/off: same register sequence as mainline ov5647_stream_on/off
  *
- * Exposure and gain controls are not implemented; the framework skips NULL cis_ops.
+ * Exposure and gain controls are not implemented (the framework skips NULL cis_ops); the
+ * sensor's own AEC/AGC is enabled at stream on (module parameter aec).
  * Register tables and sequences come from mainline drivers/media/i2c/ov5647.c (v6.6).
  */
 
@@ -133,6 +134,39 @@ static int sensor_ov5647_cis_set_global_setting(struct v4l2_subdev *subdev)
 	return ret;
 }
 
+/*
+ * No exposure/gain cis_ops are implemented, and the mode tables leave the sensor in manual
+ * exposure with ~2 lines (0x3500-02 = 0x000200): frames come out black. Like the mainline
+ * driver's defaults, start from 1000 lines / gain 0x20 and let the sensor's own AEC/AGC run.
+ */
+static bool aec = true;
+module_param(aec, bool, 0644);
+MODULE_PARM_DESC(aec, "sensor auto exposure/gain (AEC/AGC) at stream on (default on)");
+
+static bool test_pattern;
+module_param(test_pattern, bool, 0644);
+MODULE_PARM_DESC(test_pattern, "colour bar test pattern (0x503d = 0x80) instead of the image");
+
+/* Called right after the mode table: the table already starts streaming, and in the
+ * Pablo bypass only the first few frames of a stream reach memory. */
+static void ov5647_apply_exposure(struct is_cis *cis)
+{
+	int ret = 0;
+
+	if (aec) {
+		ret = ov5647_write(cis, 0x3500, 0x00);		/* exposure[19:16]: 1000 lines << 4 */
+		ret |= ov5647_write(cis, 0x3501, 0x3e);
+		ret |= ov5647_write(cis, 0x3502, 0x80);
+		ret |= ov5647_write(cis, 0x350a, 0x00);		/* AGC gain */
+		ret |= ov5647_write(cis, 0x350b, 0x20);
+		ret |= ov5647_write(cis, 0x3503, 0x00);		/* AEC + AGC auto */
+	}
+	/* checks the whole RAW path (CSIS, DMA, unpacking) independent of light and exposure */
+	ret |= ov5647_write(cis, 0x503d, test_pattern ? 0x80 : 0x00);
+	if (ret)
+		err("%s: exposure/test pattern setup failed (%d)\n", __func__, ret);
+}
+
 static int sensor_ov5647_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 {
 	struct is_cis *cis;
@@ -162,6 +196,8 @@ static int sensor_ov5647_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 		return ret;
 
 	ov5647_set_mode_data(cis->cis_data, mode);
+	ov5647_apply_exposure(cis);
+
 	probe_info("%s: mode %u = %ux%u RAW10\n", __func__, mode,
 		   ov5647_modes[mode].width, ov5647_modes[mode].height);
 	return 0;
@@ -170,7 +206,7 @@ static int sensor_ov5647_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 static int sensor_ov5647_cis_stream_on(struct v4l2_subdev *subdev)
 {
 	struct is_cis *cis;
-	int ret;
+	int ret = 0;
 
 	FIMC_BUG(!subdev);
 	cis = to_cis(subdev);

@@ -854,3 +854,44 @@ OV5647은 ISP가 필요 없는 RAW 센서다. 경로는 CSIS(MIPI 수신) → WD
 **현재 상태:** DQBUF로 버퍼가 약 15 fps로 돌아온다. 그러나 이미지 플레인에는 데이터가 없다(시작 표시값 0x5a 그대로). Pablo에서 RAW(VC0)는 leader(`/dev/video102`)가 아니라 **VC 캡처 노드**(`ssdevice_idvc0` = `/dev/video214`)로 DMA된다. 다음은 그 노드를 열고, leader 메타의 `node_group.capture[]`에 VC0 요청을 넣는 일이다.
 
 보드에 빠르게 파일을 보내는 도구(raw tty + `head -c`, 7.6 MB를 5초에 전송): 맥에서 `python3 acmpush2.py fimc-is.ko /tmp/fimc-is.ko`.
+
+### 9.7 첫 RAW 프레임 — VC0 캡처 노드, 테스트 패턴, 실제 영상
+
+Pablo에서 RAW(VC0)는 leader 버퍼가 아니라 **VC 캡처 노드**로 DMA된다.
+
+- 센서 인스턴스 1의 VC0 노드는 `/dev/video214`다(`IS_VIDEO_SS1VC0_NUM` = 110 + 4 = 114, 이름은 `ssdevice_idvc0`).
+- 노드 타입은 `CAPTURE_MPLANE`다.
+- leader 메타의 `shot_ext.node_group`(@0x58)에서 `capture[0]`(@0x58+0x30)에 `{vid 114, request 1, crop 0,0,640,480, BG10}`을 넣는다.
+- 구조체 오프셋은 모두 `fimc-is.ko`의 DWARF(`llvm-dwarfdump`)에서 읽었다.
+
+| 단계에서 만난 문제 | 원인 | 해결 |
+|---|---|---|
+| `SysMMU WRITE PAGE FAULT at 0xf8dde040` (CSISX2), 이어서 `CSIS_ERR_DMA_DMAFIFO_FULL` 패닉 | VC0 DMA가 RAW10을 **픽셀당 16비트**(LE, 10비트 유효)로 쓴다. 640×480×2 = 614400 B인데 플레인은 packed 기준 384000 B | dma-buf를 플레인의 2배로 할당한다(IOMMU는 dma-buf 전체를 매핑함) |
+| `csi_dma_tag`: `WARN_ON(!f_subdev)` 뒤 Oops | 프레임 시작 때 `csis_check_vc_dma_buf`가 PROCESS로 옮긴 VC0 프레임에는 태그(`frame->subdev`)가 없음 | bypass 패치 6: DMA 채널 subdev를 쓰고, leader 프레임은 알 때만 갱신 |
+| 경고 백트레이스 폭주 → 워치독 리셋 | 위 경우마다 `WARN_ON(!ldr_framemgr)`가 115200 bps earlycon으로 출력됨 | 태그 없는 프레임이면 경고 생략 |
+| 스트림당 VC0 3장만 나옴 | 그룹 shot 자원(`smp_resource` = async 1 + sync 2)은 leader 프레임 완료 때 반납되는데, bypass에서는 leader가 완료되지 않음(완료는 원래 3AA 몫) | 지금은 스트림당 3장으로 쓴다. 프레임 끝에서 leader를 완료시키는 패치는 SoC 멈춤을 일으켜 적용하지 않음 |
+| 받은 3장이 모두 검은 화면 | 모드 테이블이 이미 스트리밍을 시작하고, 노출은 수동 `0x000200`(약 2줄)이다. 3장이 `stream_on`보다 먼저 지나감 | `is-cis-ov5647`: 모드 테이블 직후 노출 1000줄, 게인 0x20, AEC/AGC 자동(0x3503=0) 설정(모듈 인자 `aec`, 기본 켬) |
+
+**테스트 패턴**(`modprobe is-cis-ov5647 test_pattern=1`, 0x503D = 0x80)으로 경로 전체를 검증했다. 가로 방향으로 흰·노랑·시안·초록·마젠타·빨강·파랑·검정 8색이 정확히 나온다. CSIS 수신, DMA, 16비트 해석, BGGR 순서가 모두 맞다는 뜻이다.
+
+![OV5647 colour bars through CSIS VC0 DMA](img/ov5647-linux510-testpattern.png)
+
+**첫 실제 프레임**(640×480, 어두운 방, AEC, 초점 조정 전). 값 범위는 0~93/1023이고 `raw10-view.py`가 자동으로 밝기를 늘렸다.
+
+![first OV5647 frame on Linux 5.10](img/ov5647-linux510-first-frame.png)
+
+직접 해 보기 (보드 셸):
+
+```bash
+modprobe fimc-is && modprobe is-cis-ov5647          # test_pattern=1 이면 컬러바
+ov5647-cap.py -n 3                                   # /tmp/ov5647_0..2.raw (VC0, u16 per pixel)
+raw10-view.py /tmp/ov5647_2.raw                      # HDMI 가운데에 2배로 표시 + /tmp/ov5647_2.ppm
+```
+
+맥으로 가져오기: `python3 tools/linux510/acmpull.py /tmp/ov5647_2.ppm out.ppm`. 보드에서 맥으로 한 번에 크게 보내면 데이터가 빠지므로, gzip 뒤 16 KiB 조각마다 md5로 확인한다.
+
+**남은 일:**
+
+1. leader 프레임 완료 처리(연속 스트리밍).
+2. 같은 부팅에서 스트림을 여러 번 열고 닫을 때의 CSIS 오류(`CSIS_ERR_LOST_FS_VC`) 뒤 리셋.
+3. 노출과 프레임 길이(VTS) 조정, 더 큰 모드(1296×972, 1920×1080).

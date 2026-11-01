@@ -43,3 +43,19 @@ grep -q 'bypass: no ISP chain; only the sensor group' $F ||
     sed -i "/^void tasklet_csis_str_otf(/,/^}/ { /^\tischain = device->ischain;$/r $H/bypass-csis-fstart.inc
 }" $F
 grep -n 'bypass: no ISP chain; only the sensor group' -B2 -A3 $F
+
+# 6. VC DMA done (csi_dma_tag): a VC0 frame armed at frame start by csis_check_vc_dma_buf()
+#    was never tagged by a leader shot, so frame->subdev is NULL (WARN at "WARN_ON(!f_subdev)"
+#    then an oops). Use the channel's DMA subdev, and touch the leader frame only if known.
+F=$C/is-device-csi_v4.c
+grep -q 'bypass: untagged VC frame' $F || sed -i '/^static void csi_dma_tag(/,/^}/ {
+    s|^\t\t\tf_subdev = frame->subdev;$|\t\t\tf_subdev = frame->subdev ? frame->subdev : dma_subdev;\t/* bypass: untagged VC frame */|
+    s|^\t\t\tfindex = frame->stream->findex;$|\t\t\tldr_frame = frame;\n\t\t\tif (frame->stream \&\& ldr_framemgr \&\& frame->subdev) {\n\t\t\tfindex = frame->stream->findex;|
+    s|^\t\t\tclear_bit(f_subdev->id, \&ldr_frame->out_flag);$|\t\t\tclear_bit(f_subdev->id, \&ldr_frame->out_flag);\n\t\t\t}|
+    s|^\t\t\tWARN_ON(!ldr_framemgr);$|\t\t\tWARN_ON(!ldr_framemgr \&\& frame->subdev);\t/* untagged: expected, no backtrace storm */|
+}' $F
+sed -n '/^static void csi_dma_tag(/,/CALL_VOPS(vctx, done/p' $F | grep -n 'bypass\|ldr_frame = \|findex\|clear_bit\|^\t\t\t}$'
+
+# (7. Completing the leader frame at frame end when there is no ischain - removing the
+#  "test_bit(IS_SENSOR_OTF_OUTPUT) -> skip" in is_sensor_notify_by_fend() - hung the SoC right
+#  after sensor start; not applied. The capture tool queues enough leader buffers instead.)
