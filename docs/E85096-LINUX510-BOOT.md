@@ -1213,4 +1213,19 @@ nproc → 8, online 0-7
 - Wi-Fi, nginx, USB 네트워크는 그대로 동작한다.
 - `modules/cpu-pmu-enable`은 진단용으로 남겨 두었다. 이제는 필요 없다.
 
-참고: 코어가 스스로 읽는 MPIDR(0x100, 0x10000 …)은 DT 값(0x1, 0x100 …)과 다르다. 그래도 IPI는 정상이다. 아직 확인하지 않은 것: CPU hotplug(끄고 다시 켜기), `cpuidle.off=1`을 빼도 되는지, 장시간 안정성.
+참고: 코어가 스스로 읽는 MPIDR(0x100, 0x10000 …)은 DT 값(0x1, 0x100 …)과 다르다. 그래도 IPI는 정상이다. 아직 확인하지 않은 것: `cpuidle.off=1`을 빼도 되는지, 장시간 안정성. hotplug는 11.9절.
+
+### 11.9 CPU hotplug(끄고 다시 켜기)는 아직 안 된다
+
+8코어로 부팅한 뒤 시험했다.
+
+```text
+echo 0 > cpu2/online   → psci: CPU2 killed (polled 0 ms)
+echo 1 > cpu2/online   → CPU2: failed to come online / unknown state 0x0   (CPU5도 같음)
+```
+
+- `cpu-pmu-enable.ko mask=0x24`로 깨우기 마스크를 미리 풀어도 같다. 이때 PMU 상태는 1(전원 켜짐)이다. 즉 전원은 들어오지만 코어가 커널 진입점까지 오지 못한다.
+- `kvm-arm.mode=none`을 붙여도 같다. 로그에 `KVM is not available`이 나온다. 커널이 EL1로 들어오므로 pKVM은 관련이 없다.
+- 부팅 때는 부트로더가 코어를 준비해 둔 상태라 켜진다. `CPU_OFF`로 한 번 꺼진 코어를 BL31이 다시 웜부트시키는 경로가 막혀 있다.
+
+실사용 영향: 부팅 때 8코어가 켜지고, `cpuidle.off=1`이라 코어가 꺼질 일이 없다. 그러니 hotplug를 쓰지만 않으면 문제없다. **`echo 0 > cpuN/online`은 하지 말 것.** 그 코어는 재부팅할 때까지 돌아오지 않는다.
