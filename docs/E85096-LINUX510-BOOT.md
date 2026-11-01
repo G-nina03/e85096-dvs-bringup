@@ -801,3 +801,29 @@ sensor_ov5647_cis_init: OV5647 chip ID 0x5647            ← Linux 5.10 Pablo �
 ```
 
 다음: `S_FMT`(640×480 SBGGR10) → `REQBUFS` → `STREAMON`으로 RAW 프레임 받기.
+
+### 9.5 OV5647 RAW 캡처 — 어디까지 왔나 (`tools/linux510/ov5647-cap.py`)
+
+`v4l2-ctl`은 쓸 수 없다. 노드가 ENUM_FMT를 구현하지 않아 `BG10`을 거부한다. 그래서 ioctl을 직접 부르는 도구를 만들었다. 순서와 이 BSP에서 알아낸 것:
+
+| 단계 | 결과 / 알아낸 것 |
+|---|---|
+| `S_INPUT` | `(scenario<<26) \| (1<<16) \| (2<<8) \| 1`. position 1, vindex 2 = SS1, leader. 전원 시퀀스와 칩 ID `0x5647` 확인 |
+| `S_CTRL V4L2_CID_IS_S_SENSOR_SIZE` (0x009a1045) | 센서 모드는 S_FMT가 아니라 이 값(`(w<<16)\|h`)으로 찾는다 → `sensor mode(640x480@60) = 0 (lane:2)`, `mode_change: 640x480 RAW10` |
+| `S_FMT` | 센서 노드는 group **leader**라서 버퍼 type이 `OUTPUT_MPLANE`(10)이다 |
+| `REQBUFS`/`QUERYBUF` | 플레인 2개: 이미지 384000 B(640×480×10bit), 메타 51200 B |
+| `QBUF` | MMAP이어도 Pablo는 플레인을 dma-buf fd로 다룬다 → `/dev/dma_heap/system-uncached`에서 할당해 `DMABUF`로 넘긴다 |
+| `STREAMON` (scenario 0) | **실패**: `is_hw_camif_cfg: ischain is null`, `is_group_buffer_queue: BUG(!sensor)` |
+| `STREAMON` (scenario 1, VISION = stand-alone) | **커널 Oops**: `is_groupmgr_init` ← `is_devicemgr_binding` (이 BSP에서는 stand-alone 경로가 깨져 있음) |
+
+**원인:** OV5647은 ISP가 필요 없는 RAW 센서이고, 하드웨어 경로(CSIS → WDMA → 메모리)도 있다. 그런데 Pablo 프레임워크는 센서 그룹 뒤에 ISP 체인(ischain, 3AA)이 연결돼 있다고 가정한다(`group->device->sensor`, camif의 CSIS→IPP mux).
+
+**다음 할 일(둘 중 하나):**
+
+1. ischain 없이 bypass하도록 fimc-is를 최소한으로 패치한다.
+   - `is_hw_camif_cfg`: ischain이 없으면 OTF mux를 건너뛴다.
+   - `is_group_buffer_queue`: `group->device->sensor`가 없으면 센서 그룹의 sensor를 쓴다.
+   - 그 밖에 is_sensor_start 쪽도 손봐야 한다.
+2. 아니면 3AA 노드도 열어 ischain을 연결한다. ISP 펌웨어(`is_lib.bin`)가 필요할 수 있다.
+
+DT 변경(이번에 추가): `exynos_is/vender/front_sensor_id = 219`, LDO32 3.3 V + power_seq, VISION scenario용 power_seq.
