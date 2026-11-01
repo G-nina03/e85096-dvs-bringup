@@ -944,6 +944,53 @@ ov5647-cap.py --live                # Ctrl-C까지 계속
 2. 같은 부팅에서 두 번째 스트림을 열면 한동안 돌다가 리셋된다.
 3. 카메라 모듈이 올라간 채로 재부팅하면 종료 단계에서 멈출 수 있다. 재부팅 전에 `rmmod`하거나 fastboot에서 `fbmini reboot`로 복구한다.
 
+### 9.9 스트림 시작 시 멈춤 해결 (`bypass.sh` 6c, `is-cis-ov5647.c`)
+
+**증상**: 부팅 후 첫 스트림을 켜면 2번 중 1번꼴로 보드가 멈췄습니다. 로그는 `ischain is NULL` 다음에 끊기고,
+하드웨어 watchdog 리셋(LK: `Abnormal RST_STAT`) 뒤 fastboot에서 멈췄습니다.
+멈추지 않은 경우에도 같은 부팅에서 두 번째 스트림을 켜면 리셋됐고, 영상이 1.5 fps밖에 안 나올 때도 있었습니다.
+
+**원인 찾기**: 멈추지 않은 경우의 UART 로그를 보면 프레임마다 다음 경고가 스택 덤프와 함께 찍혀 있었습니다.
+
+```
+WARNING: ... at drivers/media/platform/exynos/camera/is-device-csi_v4.c:747 csi_dma_tag+0x434/0x560
+```
+
+747번 줄은 패치 6이 넣은 `WARN_ON(!ldr_framemgr && frame->subdev)`입니다. 패치 8 덕분에 VC0 프레임에 tag가
+붙게 되면서, 프레임이 전달될 때마다 이 경고가 발생했습니다(bypass 모드의 VC0 subdev에는 leader가 없기 때문입니다).
+
+스택 덤프 하나는 약 3 KB이고, 115200 bps UART로 내보내는 데 0.25초가 걸립니다. 이 출력이 CSIS 인터럽트 안에서 일어나니
+CPU가 1개뿐인 시스템에서는 다른 일을 할 수 없습니다. 그래서
+- 영상이 1.5 fps로 떨어지고(STREAMON에서 센서 시작까지도 6.7초),
+- 운이 나쁘면 watchdog keepalive 스레드가 제때 돌지 못해 **하드웨어 watchdog이 리셋**합니다.
+  리셋은 panic이 아니라서 panic 메시지가 남지 않고, 그래서 "로그 없이 멈춤"으로 보였습니다.
+
+**수정**
+1. `bypass.sh` 6c: 이 WARN을 지웁니다. bypass에서는 leader가 없는 것이 정상입니다.
+2. 콘솔 로그 레벨을 낮춥니다. `/etc/sysctl.d/90-lockup.conf`에 `kernel.printk = 4 4 1 7`을 넣으면
+   경고 이상만 UART로 나갑니다. 전체 로그는 `dmesg`로 볼 수 있습니다.
+3. `is-cis-ov5647.c`: 모드 테이블을 쓰고 나면 센서가 곧바로 영상을 내보내는데, CSIS는 0.4초 뒤 stream on 때에야 켜집니다.
+   그래서 모드 설정 끝에서 센서를 stream off(MIPI LP-11, `0x4800`/`0x4202`/`0x300d`)로 돌려 두고,
+   `cis_stream_on`에서 처음 출력을 시작하게 했습니다.
+
+빌드와 설치:
+
+```sh
+# fimc-is.ko: bypass.sh(6c 포함)를 적용한 커널 소스로 modules 빌드 → 보드의 /lib/modules/$(uname -r)/ 에 복사
+# is-cis-ov5647.ko: modules/ov5647-pablo/build-module.sh
+```
+
+**결과** (2026-11-01)
+
+| 시험 | 결과 |
+|---|---|
+| 같은 부팅에서 스트림 4회 연속 (300 + 150×3장) | 모두 정상, `WARNING` 0개 |
+| 재부팅 → 첫 스트림, 3회 반복 | 3/3 정상 (이전에는 4번 중 2번 멈춤) |
+| 카메라 모듈을 올린 채 재부팅 | 3/3 정상 종료 (fastboot에 멈추지 않음) |
+| HDMI 실시간 영상 | 평균 약 12 fps (30장마다 9~19 fps 사이를 오감) |
+
+**남은 문제**: 첫 스트림을 끌 때 약 24초가 걸립니다. 드라이버가 남은 요청을 `forcely trigger`로 하나씩 끝냅니다.
+
 ## 10. Wi-Fi — 칩 안의 Maxwell(Samsung SCSC) 무선랜
 
 Exynos 850에는 Wi-Fi/BT 코어(WLBT, "Maxwell" mx140)가 SoC 안에 들어 있다. 5.10 커널에는 드라이버가 이미 모듈로 빌드되어 있다(`scsc_mx.ko`, `scsc_platform_mif.ko`, `scsc_wlan.ko`). DT에도 `scsc_wifibt@119C0000` 노드가 있다. 없는 것은 **펌웨어**와 **사용자 공간 도구**뿐이다.

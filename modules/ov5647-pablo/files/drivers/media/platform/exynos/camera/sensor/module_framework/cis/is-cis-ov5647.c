@@ -147,8 +147,7 @@ static bool test_pattern;
 module_param(test_pattern, bool, 0644);
 MODULE_PARM_DESC(test_pattern, "colour bar test pattern (0x503d = 0x80) instead of the image");
 
-/* Called right after the mode table: the table already starts streaming, and in the
- * Pablo bypass only the first few frames of a stream reach memory. */
+/* Called right after the mode table, before the sensor is put back into stream off. */
 static void ov5647_apply_exposure(struct is_cis *cis)
 {
 	int ret = 0;
@@ -197,6 +196,19 @@ static int sensor_ov5647_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 
 	ov5647_set_mode_data(cis->cis_data, mode);
 	ov5647_apply_exposure(cis);
+
+	/*
+	 * The mode table leaves the sensor streaming, but CSIS is only enabled at stream on,
+	 * ~0.4 s later. CSIS then starts in the middle of a frame, and about every second stream
+	 * start the SoC hung without any log. Keep MIPI in LP-11 until cis_stream_on.
+	 */
+	ret = ov5647_write(cis, OV5647_REG_MIPI_CTRL00, OV5647_MIPI_CTRL00_STREAM_OFF);
+	if (!ret)
+		ret = ov5647_write(cis, OV5647_REG_FRAME_OFF_NUMBER, 0x0f);
+	if (!ret)
+		ret = ov5647_write(cis, OV5647_REG_PAD_OUT, 0x01);
+	if (ret < 0)
+		return ret;
 
 	probe_info("%s: mode %u = %ux%u RAW10\n", __func__, mode,
 		   ov5647_modes[mode].width, ov5647_modes[mode].height);

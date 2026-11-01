@@ -64,6 +64,17 @@ grep -q 'bypass: VC subdev without leader' $F || sed -i '/^static void csi_dma_t
 }' $F
 grep -n 'bypass: VC subdev without leader' $F
 
+# 6c. Since patch 8 the VC0 frames are tagged (frame->subdev set), but the bypass VC0 subdev still
+#     has no leader, so "WARN_ON(!ldr_framemgr && frame->subdev)" fired with a full backtrace for
+#     every delivered frame. Printing it over the 115200 baud UART from the CSIS IRQ starved the
+#     watchdog keepalive thread on the single CPU: 1.5 fps instead of 30, and now and then a
+#     hardware watchdog reset right after stream on without any panic message. No leader is
+#     expected here, so no WARN.
+grep -q 'bypass: no leader is expected' $F || sed -i '/^static void csi_dma_tag(/,/^}/ {
+    s|^\t\t\tWARN_ON(!ldr_framemgr \&\& frame->subdev);.*$|\t\t\t/* bypass: no leader is expected for the VC0 subdev without ISP */|
+}' $F
+grep -n 'bypass: no leader is expected' $F
+
 # 7. Sensor leader frame end (is_sensor_notify_by_fend). With IS_SENSOR_OTF_OUTPUT the 3AA group
 #    completes the leader frame later; without an ischain nobody does, the frame stays in
 #    FS_PROCESS and gtask->smp_resource is never given back: only 3 shots per stream.
