@@ -90,6 +90,8 @@ for extra in /o/ext-*/*.ko; do
 done
 cp /o/modules.order /o/modules.builtin /o/modules.builtin.modinfo $R/lib/modules/$KVER/ 2>/dev/null || true
 chroot $R depmod "$KVER"
+# CPU hotplug PMU writes (modules/e850-cpuhp, docs 11.13): without it an offlined core never returns
+[ -f $R/lib/modules/$KVER/e850-cpuhp.ko ] && echo e850-cpuhp > $R/etc/modules-load.d/e850-cpuhp.conf
 # udev would autoload every module whose DT node exists, including the ones the initramfs
 # leaves out on purpose (autoload.deny: camera, MFC, Wi-Fi/BT, sound, display...). fimc-is
 # probing the ERD3830 sensors panicked the kernel (docs 7.18), so blacklist them here too;

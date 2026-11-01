@@ -1118,7 +1118,7 @@ lockup 당시 CPU1의 hrtimer 인터럽트 수가 0이었다. MCT 로컬 타이�
 1. ~~CPU2~7 켜기~~ — **해결(11.8절). 8코어 모두 동작.**
 2. ~~`maxcpus=1` 빼기~~ — 11.8절에서 함께 반영.
 3. ~~카메라 fps 다시 재기~~ — 11.10절. 그대로 12~16 fps.
-4. ~~장시간 안정성~~ 통과(11.11). 남음: `cpuidle.off=1` 빼기는 실패(11.12, 유지), hotplug(11.9), ~~카메라 fps~~ 55~63 fps로 해결(11.10).
+4. ~~장시간 안정성~~ 통과(11.11). 남음: `cpuidle.off=1` 빼기는 실패(11.12, 유지), ~~hotplug~~ 해결(11.13), ~~카메라 fps~~ 55~63 fps로 해결(11.10).
 
 ### 11.5 보드를 USB로 연결하면 맥의 인터넷이 끊기는 문제
 
@@ -1216,7 +1216,7 @@ nproc → 8, online 0-7
 
 참고: 코어가 스스로 읽는 MPIDR(0x100, 0x10000 …)은 DT 값(0x1, 0x100 …)과 다르다. 그래도 IPI는 정상이다. 아직 확인하지 않은 것: `cpuidle.off=1`을 빼도 되는지, 장시간 안정성. hotplug는 11.9절.
 
-### 11.9 CPU hotplug(끄고 다시 켜기)는 아직 안 된다
+### 11.9 CPU hotplug(끄고 다시 켜기)는 아직 안 된다 → 11.13에서 해결
 
 8코어로 부팅한 뒤 시험했다.
 
@@ -1229,7 +1229,7 @@ echo 1 > cpu2/online   → CPU2: failed to come online / unknown state 0x0   (CP
 - `kvm-arm.mode=none`을 붙여도 같다. 로그에 `KVM is not available`이 나온다. 커널이 EL1로 들어오므로 pKVM은 관련이 없다.
 - 부팅 때는 부트로더가 코어를 준비해 둔 상태라 켜진다. `CPU_OFF`로 한 번 꺼진 코어를 BL31이 다시 웜부트시키는 경로가 막혀 있다.
 
-실사용 영향: 부팅 때 8코어가 켜지고, `cpuidle.off=1`이라 코어가 꺼질 일이 없다. 그러니 hotplug를 쓰지만 않으면 문제없다. **`echo 0 > cpuN/online`은 하지 말 것.** 그 코어는 재부팅할 때까지 돌아오지 않는다.
+실사용 영향: 부팅 때 8코어가 켜지고, `cpuidle.off=1`이라 코어가 꺼질 일이 없다. 그러니 hotplug를 쓰지만 않으면 문제없다. **`echo 0 > cpuN/online`은 하지 말 것.** 그 코어는 재부팅할 때까지 돌아오지 않는다. (11.13의 `e850-cpuhp.ko`가 올라가 있으면 된다.)
 
 ### 11.10 8코어에서 카메라 실시간 영상 fps
 
@@ -1275,3 +1275,30 @@ live: 60 frames, 16.0 fps / 90: 12.0 / 120: 15.8 / 150: 13.4 / 180: 14.1
 - 복구(04:40): 전원을 껐다 켜자 LK가 fastboot에 들어갔다. 미리 띄워 둔 대기 루프(`until fastboot devices | grep -q fastboot; ...`)가 `boot-nokvm`을 다시 구웠다(`fastboot reboot`가 `usb_read failed`를 내도 재부팅은 된다). 다시 8코어, `cpuidle.off=1`로 정상이다.
 - hotplug(11.9)와 같은 뿌리로 보인다. 둘 다 코어가 전원을 끄거나 깊은 idle에 들어간 뒤, Android 10 시절 BL31이 그 코어를 다시 깨우는 경로를 거친다.
 - 결론: 당분간 `cpuidle.off=1`을 유지한다. 다시 시험한다면 `s3c2410_wdt.tmr_atboot=1`(커널이 워치독을 부팅 때부터 켬)도 함께 넣어, 멈춰도 사람 손 없이 fastboot로 돌아오게 한다.
+
+### 11.13 해결: CPU hotplug (`modules/e850-cpuhp`)
+
+mainline에 Linaro의 Exynos850 hotplug 패치가 올라와 있다([PATCH v5 4/6] "soc: samsung: exynos-pmu: add Exynos850 CPU hotplug support", Alexey Klimov, 2026-06, E850-96에서 시험). vendor 5.10 `exynos-cpupm`과 비교하면 두 가지가 다르다.
+
+1. `CLUSTERx_CPUy_INT_EN`(PMU 0x11860000 + 0x1044 + cluster×0x400 + core×0x80)의 **bit 3**을 끌 때 1, 켤 때 0으로 바꾼다. vendor의 `flexpmu_cal_cpu_s5e3830.h`에서는 바로 이 줄들이 주석으로 막혀 있다.
+2. 켜기 쪽(INFORM 지우기, GRP2 wake-up 마스크 해제와 pending 지우기)을 **`CPU_ON` 전에** 부팅 CPU에서 한다(`CPUHP_BP_PREPARE_DYN`). vendor는 새 코어가 이미 돌기 시작한 뒤에(`CPUHP_AP_ARM_TWD_STARTING`) `cal_cpu_enable()`을 부른다. 그런데 코어는 그 전 단계를 넘지 못한다.
+
+`modules/e850-cpuhp/e850-cpuhp.c`가 이 두 가지를 cpuhp 콜백으로 넣는다. 끄기는 `CPUHP_AP_ONLINE_DYN` teardown(꺼지는 코어에서 `CPU_OFF` 전)이고, 켜기는 `CPUHP_BP_PREPARE_DYN`이다. 레지스터는 `ioremap`으로 직접 쓴다.
+
+```text
+e850-cpuhp: cpu2 offline: inform 1 int_en fcc status 1 grp2_en 4
+psci: CPU2 killed (polled 0 ms)
+e850-cpuhp: cpu2 before on: inform 10001 int_en ffc status 0 grp2_en 4    ← 꺼진 동안 전원 0, BL31이 INFORM에 0x10000을 더함
+CPU2: Booted secondary processor 0x0000000200 [0x410fd051]
+```
+
+시험(`/root/hp.sh 30 300`): CPU1~7 전부 끄고 켜기 30회 + 무작위 한 코어 토글 300회. 1분 19초 걸렸고 **실패 0**, `failed to come online` 0, 끝난 뒤 `online=0-7`.
+
+설치: 보드의 `/lib/modules/$(uname -r)/e850-cpuhp.ko` + `/etc/modules-load.d/e850-cpuhp.conf`(부팅 때 자동 적재). `build-rootfs.sh`도 `ext-e850-cpuhp`가 빌드돼 있으면 같은 설정을 넣는다. 빌드:
+
+```sh
+docker run --rm -v ~/e850-a13-build:/work -v e850-kernel:/work/kernel -v e850-out:/work/out \
+    -v "$PWD/modules/e850-cpuhp:/m:ro" e850-build-env:1 bash /m/build-module.sh
+```
+
+다음: `cpuidle.off=1`(11.12)도 같은 깨우기 경로를 쓴다. C2 idle에 들어가기 전과 나온 뒤에도 같은 PMU 쓰기가 필요할 것이다. mainline 시리즈도 idle은 "후속 작업"으로 남겨 두었다.
