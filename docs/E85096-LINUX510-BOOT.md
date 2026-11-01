@@ -895,3 +895,41 @@ raw10-view.py /tmp/ov5647_2.raw                      # HDMI 가운데에 2배로
 1. leader 프레임 완료 처리(연속 스트리밍).
 2. 같은 부팅에서 스트림을 여러 번 열고 닫을 때의 CSIS 오류(`CSIS_ERR_LOST_FS_VC`) 뒤 리셋.
 3. 노출과 프레임 길이(VTS) 조정, 더 큰 모드(1296×972, 1920×1080).
+
+## 10. Wi-Fi — 칩 안의 Maxwell(Samsung SCSC) 무선랜
+
+Exynos 850에는 Wi-Fi/BT 코어(WLBT, "Maxwell" mx140)가 SoC 안에 들어 있다. 5.10 커널에는 드라이버가 이미 모듈로 빌드되어 있다(`scsc_mx.ko`, `scsc_platform_mif.ko`, `scsc_wlan.ko`). DT에도 `scsc_wifibt@119C0000` 노드가 있다. 없는 것은 **펌웨어**와 **사용자 공간 도구**뿐이다.
+
+### 10.1 펌웨어: Android vendor 이미지에서 꺼내기 (`tools/linux510/wifi-fw-extract.sh`)
+
+Android 10 백업의 `super`(mmcblk0p12)는 동적 파티션 묶음이다. 그 안의 `vendor` ext4에서 `/etc/wifi`를 꺼낸다(`mx140.bin` 1.5 MB, `mx140/conf/*.hcf`, `slsi_reg_database.bin`).
+
+```bash
+sh tools/linux510/wifi-fw-extract.sh ~/Desktop/E850_Android10_backup_20261031 out/
+#  lpunpack-min.py: system [(3072000 sectors @2048)], vendor [(614400 sectors @3074048)]
+#  -> out/wifi-fw.tgz  (vendor/etc/wifi/...)
+```
+
+`lpunpack-min.py`는 LP 메타데이터(slot 0)를 직접 읽는 30줄짜리 파서다. extent가 하나뿐인 선형 파티션만 다룬다.
+
+### 10.2 드라이버가 펌웨어를 찾는 경로
+
+`mx140_file.c`는 `request_firmware("../etc/wifi/mx140.bin")`을 부른다. 즉 `/lib/firmware/../etc/wifi`다. Debian rootfs에는 `/lib/firmware` 자체가 없어서 `..`가 풀리지 않았다(`Direct firmware load ... failed with error -2`). 다음 두 가지로 해결했다.
+
+```bash
+tar xzf wifi-fw.tgz -C /              # /vendor/etc/wifi
+mkdir -p /lib/firmware /lib/etc
+ln -s /vendor/etc/wifi /lib/etc/wifi
+```
+
+### 10.3 올리기 (`tools/linux510/e850-wifi.sh`)
+
+```bash
+modprobe scsc_mx && modprobe scsc_wlan    # wlan0, p2p0, wlan1 생김 (blacklist는 이름 지정 modprobe에는 안 걸림)
+ip link set wlan0 up                      # 이때 mx140.bin을 내려받고 WLBT 코어를 부팅
+iw dev wlan0 scan                         # 주변 AP가 보이면 성공
+```
+
+`slsi_read_regulatory: Failed to read regdb`와 `WLBTD not running` 경고는 나오지만 스캔은 된다.
+
+사용자 공간 도구는 `wpasupplicant`, `iw`, `libnl-*`, `libpcsclite1`, `wireless-regdb`다. 보드에 아직 네트워크가 없으므로 맥의 `debian:bookworm`(arm64) 컨테이너에서 `apt-get download`로 받는다. 받은 패키지는 `acmpush2.py`로 보내 `dpkg -i`로 설치했다. 접속은 `e850-wifi.sh SSID 암호`로 한다(wpa_supplicant@wlan0 + systemd-networkd DHCP).
