@@ -59,6 +59,8 @@ DHCPServer=yes
 PoolOffset=10
 PoolSize=10
 EmitDNS=no
+# no default route: otherwise the Mac sends all its traffic to the board and loses internet
+EmitRouter=no
 EOT
 chroot $R systemctl enable systemd-networkd.service
 

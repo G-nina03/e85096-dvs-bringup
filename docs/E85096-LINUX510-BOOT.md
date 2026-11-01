@@ -1118,3 +1118,13 @@ lockup 당시 CPU1의 hrtimer 인터럽트 수가 0이었다. MCT 로컬 타이�
 1. **CPU2~7 하나씩 켜기**: 15초 간격으로 켜는 시험을 시작했다. 맥 쪽 네트워크가 끊겨서 결과는 아직 확인하지 못했다.
 2. 8개가 다 되면 `maxcpus=1`을 빼고 boot.img를 다시 만든다.
 3. 그다음 카메라 실시간 영상(9.8)의 fps를 다시 잰다.
+
+### 11.5 보드를 USB로 연결하면 맥의 인터넷이 끊기는 문제
+
+보드의 USB NCM 가젯은 맥에 `E850-96 Linux`(en13) 네트워크 장치로 잡힌다. 맥의 서비스 순서에서 이 장치가 Wi-Fi보다 위에 있다. 그런데 보드의 networkd DHCP 서버는 기본값(`EmitRouter=yes`)으로 자기(192.168.7.1)를 기본 게이트웨이로 알려 준다. 그 결과 맥의 모든 트래픽이 보드로 가서 인터넷과 DNS가 끊긴다(`ENOTFOUND`).
+
+- 보드: `build-rootfs.sh`의 `10-usb0.network`에 `EmitRouter=no`를 넣었다. 이미 만든 rootfs에는 직접 넣는다.
+  ```sh
+  sed -i 's/^EmitDNS=no$/EmitDNS=no\nEmitRouter=no/' /etc/systemd/network/10-usb0.network && systemctl restart systemd-networkd
+  ```
+- 맥(바로 적용): 시스템 설정 → 네트워크 → … → 서비스 순서 설정에서 Wi-Fi를 맨 위로 올린다.
