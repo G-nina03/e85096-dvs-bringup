@@ -1272,4 +1272,6 @@ live: 60 frames, 16.0 fps / 90: 12.0 / 120: 15.8 / 150: 13.4 / 180: 14.1
 - 결과: **1.93초에 멈췄다.** UART 마지막 줄은 내장 드라이버 initcall(`usbhid: USB HID core driver`)이었다. 그 뒤로 로그가 늘지 않았고 USB도 나타나지 않았다.
 - 워치독 데몬(`watchdog -T 30`)은 initramfs 1단계에서야 켜진다. 그래서 이번 멈춤은 리셋으로 바뀌지 않는다. **전원을 껐다 켜야** 한다. 그러면 LK가 비정상 리셋으로 보고 fastboot에 들어간다(7.12). 그때 `boot-nokvm`을 다시 굽는다.
 - 7.17(1코어)에서는 initramfs가 끝나고 첫 idle에서 멈췄다. 8코어에서는 CPU1~7이 부팅 직후부터 idle이라 훨씬 일찍 멈추는 것으로 보인다. 다만 이 시점에는 exynos cpuidle 드라이버(모듈, 4.2초)가 아직 없다. 그러니 idle은 WFI뿐이어야 한다. `cpuidle.off=1`이 있을 때와 무엇이 다른지는 아직 모른다. 한 번만 시험했으므로 재현성도 확인하지 않았다.
+- 복구(04:40): 전원을 껐다 켜자 LK가 fastboot에 들어갔다. 미리 띄워 둔 대기 루프(`until fastboot devices | grep -q fastboot; ...`)가 `boot-nokvm`을 다시 구웠다(`fastboot reboot`가 `usb_read failed`를 내도 재부팅은 된다). 다시 8코어, `cpuidle.off=1`로 정상이다.
+- hotplug(11.9)와 같은 뿌리로 보인다. 둘 다 코어가 전원을 끄거나 깊은 idle에 들어간 뒤, Android 10 시절 BL31이 그 코어를 다시 깨우는 경로를 거친다.
 - 결론: 당분간 `cpuidle.off=1`을 유지한다. 다시 시험한다면 `s3c2410_wdt.tmr_atboot=1`(커널이 워치독을 부팅 때부터 켬)도 함께 넣어, 멈춰도 사람 손 없이 fastboot로 돌아오게 한다.
