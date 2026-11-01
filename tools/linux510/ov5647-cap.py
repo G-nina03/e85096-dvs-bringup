@@ -208,7 +208,9 @@ class Live:
         self.scale = max(1, min(xres // (w // 2), yres // (h // 2)))
         iw, ih = w // 2 * self.scale, h // 2 * self.scale
         x0, y0 = (xres - iw) // 2, yoff + (yres - ih) // 2
-        self.win = fb[y0:y0 + ih, x0 * 4:(x0 + iw) * 4].reshape(ih, iw, 4)
+        # one XRGB8888 word per screen pixel; viewed as (row, s, col, s) so a broadcast write scales
+        self.win = fb[y0:y0 + ih, x0 * 4:(x0 + iw) * 4].view('<u4').reshape(ih // self.scale, self.scale,
+                                                                          iw // self.scale, self.scale)
         self.luts = None
         self.n = 0
         self.t = time.time()
@@ -218,8 +220,10 @@ class Live:
         means = [max(float(c.mean()) - 16, 1.0) for c in (r, g, b)]
         top = max(float(np.percentile(g, 99.5)) - 16, 8.0)
         v = np.clip(np.arange(1024, dtype=np.float32) - 16, 0, None)
-        self.luts = [(np.clip(v * (sum(means) / 3 / m) / top, 0, 1) ** (1 / 2.2) * 255).astype(np.uint8)
-                     for m in means]
+        r8, g8, b8 = [(np.clip(v * (sum(means) / 3 / m) / top, 0, 1) ** (1 / 2.2) * 255).astype(np.uint32)
+                      for m in means]
+        # pre-shifted to their XRGB8888 byte, alpha folded into blue: a pixel is three lookups ORed
+        self.luts = (b8 | 0xff000000, g8 << 8, r8 << 16)
 
     def show(self, buf):
         np = self.np
@@ -229,11 +233,8 @@ class Live:
         r = bayer[1::2, 1::2]
         if self.luts is None or self.n % 30 == 0:  # white balance + gain every 30 frames
             self.update_luts(r, g, b)
-        img = np.empty((self.h // 2, self.w // 2, 4), np.uint8)
-        img[..., 0], img[..., 1], img[..., 2], img[..., 3] = \
-            self.luts[2][b], self.luts[1][g], self.luts[0][r], 255     # XRGB8888 little endian: B G R X
-        s = self.scale
-        self.win[:] = img.repeat(s, 0).repeat(s, 1)
+        lb, lg, lr = self.luts
+        self.win[:] = (lb[b] | lg[g] | lr[r])[:, None, :, None]   # 10 ms at 4x vs 21 ms for repeat()
         self.n += 1
         if self.n % 30 == 0:
             now = time.time()
