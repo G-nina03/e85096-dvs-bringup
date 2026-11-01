@@ -1115,7 +1115,7 @@ lockup 당시 CPU1의 hrtimer 인터럽트 수가 0이었다. MCT 로컬 타이�
 
 ### 11.4 남은 일
 
-1. **CPU2~7 하나씩 켜기** — 11.6절. CPU2·3·4는 켜지지 않는다(보드는 멈추지 않음).
+1. **CPU2~7 하나씩 켜기** — 11.6~11.7절. 꺼진 코어에 전원이 들어가지 않는다. 다음은 `maxcpus=1`을 빼고 부팅해 보기.
 2. 8개가 다 되면 `maxcpus=1`을 빼고 boot.img를 다시 만든다.
 3. 그다음 카메라 실시간 영상(9.8)의 fps를 다시 잰다.
 
@@ -1146,3 +1146,29 @@ CPU3·CPU4(다른 클러스터, MPIDR 0x10000)도 같다. 보드는 리셋되지
 - exynos-cpuhp: `available cpu 0xff`, `set online cpu 0xff`, `cpu_online_mask 0x3`. Samsung hotplug 드라이버가 막고 있지는 않다.
 
 다음에 볼 것: CPU1만 켜지는 이유(부팅 때 LK/EL3가 CPU1만 미리 준비했는지), `exynos-cpupm`의 cluster/core 전원 콜백, Android 10에서 8코어가 켜질 때의 PMU/ACPM 순서.
+
+### 11.7 꺼진 코어에 전원이 들어가지 않는다 (`modules/cpu-pmu-enable`)
+
+`exynos-cpupm`은 probe 때 켜져 있던 CPU에만 `cal_cpu_enable()`(flexpmu wake-up 마스크 `GRP2_INTR_BID_ENABLE` 해제)을 호출한다. `maxcpus=1`이면 CPU0만 해당된다. 보드에 `/dev/mem`이 없으므로, 나머지 CPU에 이 함수를 호출하고 PMU 상태(`cal_cpu_status`)를 찍는 작은 모듈을 만들었다.
+
+```sh
+docker run --rm -v ~/e850-a13-build:/work -v e850-kernel:/work/kernel -v e850-out:/work/out \
+    -v "$PWD/modules/cpu-pmu-enable:/m:ro" e850-build-env:1 bash /m/build-module.sh
+insmod cpu-pmu-enable.ko          # mask=0xfc (CPU2-7) 기본값
+# cpu-pmu-enable: cpu2 status 0 -> enable 0 -> status 0
+# cpu-pmu-enable: cpu4 status 1 ...   (앞서 CPU_ON을 시도한 뒤라 전원은 켜졌지만 커널에 못 들어옴)
+```
+
+| 시험 | 결과 |
+|---|---|
+| 부팅 후 처음 CPU1 켜기 | 성공 |
+| CPU1 끄기(`psci: CPU1 killed`) → 다시 켜기 | 실패, `unknown state 0x0` |
+| 부팅 후 처음 CPU2 켜기 | 실패. 그 뒤 CPU1은 성공 |
+| `cal_cpu_enable()` 뒤 CPU2 켜기 | 실패. PMU 상태도 계속 0(전원 꺼짐) |
+
+결론: 꺼져 있는 코어를 PSCI `CPU_ON`으로 켜는 경로가 동작하지 않는다. CPU1은 부트로더가 켜 둔 채(WFE 대기) 넘겨준 것으로 보인다. 그래서 첫 번째만 깨어나고, 한 번 끄면 다시 전원이 들어가지 않는다. CPU4는 전원은 켜졌지만 커널 진입점까지 오지 못했다.
+
+다음 후보:
+1. Android 10(같은 부트로더)에서는 8코어가 켜진다. Android에서 hotplug 전에 무엇이 다른지 확인한다. 예: `exynos_mct` 로드, ACPM/APM 펌웨어 준비 순서, `cpuidle.off=1` 여부.
+2. EL3(BL31)의 `CPU_ON`이 APM(flexpmu)에 전원 요청을 보내는 방식(ACPM IPC 채널)이 Linux 쪽 초기화를 기다리는지 확인한다.
+3. 우회: `maxcpus=1`을 빼고 부팅 때 커널이 8개를 한꺼번에 켜게 한다. 부팅 시점에는 부트로더가 준비한 상태라 될 가능성이 있다. MCT를 이미 뺐으므로 CPU1 lockup 원인은 없다.
