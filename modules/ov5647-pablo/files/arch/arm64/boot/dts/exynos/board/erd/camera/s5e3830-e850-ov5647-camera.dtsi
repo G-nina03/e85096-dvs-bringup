@@ -38,19 +38,26 @@
 			sensor_scenario = <SENSOR_SCENARIO_NORMAL>;
 			gpio_scenario = <GPIO_SCENARIO_ON>;
 
+			/* CAM_VDD_33 (CN4 pin 15). Android 10 left it on; on Linux nothing else uses
+			 * LDO32, so it is off until the sensor powers up (chip ID read gave -ENXIO). */
 			10 {
+				pname = "vdd_ldo32";
+				pin = <PIN_REGULATOR 1 2000>;
+			};
+
+			20 {
 				pname = "cam_gpio low";
 				pin = <PIN_OUTPUT 0 10000>;
 				gpio = <&gpg1 5 0x1>;
 			};
 
-			20 {
+			30 {
 				pname = "cam_gpio high (module power enable)";
 				pin = <PIN_OUTPUT 1 20000>;
 				gpio = <&gpg1 5 0x1>;
 			};
 
-			30 {
+			40 {
 				pname = "on_i2c";
 				pin = <PIN_I2C 1 0>;
 			};
@@ -70,8 +77,19 @@
 				pin = <PIN_OUTPUT 0 1000>;
 				gpio = <&gpg1 5 0x1>;
 			};
+
+			30 {
+				pname = "vdd_ldo32";
+				pin = <PIN_REGULATOR 0 0>;
+			};
 		};
 	};
+};
+
+/* CAM_VDD_33 is 3.3 V (Android 10 DT: LDO32 3300000 uV); the ERD PMIC dtsi fixes it at 2.8 V */
+&l32_reg {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
 };
 
 &hsi2c_2 {

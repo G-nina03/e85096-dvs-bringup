@@ -21,6 +21,27 @@ F=$K/drivers/video/fbdev/exynos/dpu30/dsim_drv.c
 grep -q 'if (dsim->panel && dsim->panel->lcd_info.mode == DECON_VIDEO_MODE)' $F ||
     sed -i 's|^\t\tif (dsim->panel->lcd_info.mode == DECON_VIDEO_MODE) {|\t\tif (dsim->panel \&\& dsim->panel->lcd_info.mode == DECON_VIDEO_MODE) {|' $F
 grep -n 'if (dsim->panel && dsim->panel->lcd_info.mode == DECON_VIDEO_MODE)' $F
+# fbcon (text console on HDMI) draws through fb_ops fillrect/copyarea/imageblit, which the
+# Android DECON driver leaves NULL: "CFI failure (target: 0x0)" in fbcon_cursor. Use the
+# generic cfb_* helpers (CONFIG_FB_CFB_FILLRECT/COPYAREA/IMAGEBLIT); DECON vmaps its buffer
+# into fbi->screen_base, which is what they draw into.
+F=$K/drivers/video/fbdev/exynos/dpu30/decon_core.c
+grep -q 'cfb_imageblit' $F ||
+    sed -i 's|^\t\.fb_mmap\t= decon_mmap,|&\n\t.fb_fillrect\t= cfb_fillrect,\n\t.fb_copyarea\t= cfb_copyarea,\n\t.fb_imageblit\t= cfb_imageblit,|' $F
+grep -n 'cfb_' $F
+# decon_fb_alloc_memory() vmaps the fb buffer, clears it, then vunmaps it and sets
+# fbi->screen_base = NULL (Android draws only through mmap). fbcon draws from the kernel:
+# keep the mapping (the buffer is from the "system-uncached" heap, so no cache maintenance)
+sed -i '/^static int decon_fb_alloc_memory(/,/^#if defined(CONFIG_FB_TEST)/ {
+    /^\tdma_buf_vunmap(buf, vaddr);$/d
+    /^\tfbi->screen_base = NULL;$/d
+}' $F
+sed -n '/^static int decon_fb_alloc_memory(/,/^#if defined(CONFIG_FB_TEST)/p' $F | grep -n 'screen_base\|vunmap'
+# FB_CFB_* are select-only symbols (olddefconfig drops them when set by hand): select them here
+KC=$K/drivers/video/fbdev/exynos/dpu30/Kconfig
+grep -q 'select FB_CFB_IMAGEBLIT' $KC ||
+    sed -i '/^config EXYNOS_DPU30$/,/^config / s|^\tdepends on \(.*\)$|\tdepends on \1\n\tselect FB_CFB_FILLRECT\n\tselect FB_CFB_COPYAREA\n\tselect FB_CFB_IMAGEBLIT|' $KC
+grep -n -A6 '^config EXYNOS_DPU30$' $KC
 # include the DT
 D=$K/arch/arm64/boot/dts/exynos/board/erd/s5e3830-erd3830.dts
 grep -q s5e3830-e850-hdmi.dtsi $D ||

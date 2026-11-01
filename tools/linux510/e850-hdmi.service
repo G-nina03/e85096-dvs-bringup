@@ -1,4 +1,4 @@
-# HDMI out on the E850-96: DPU (DECON -> DSIM0) + LT8912B bridge, colour bars on /dev/fb0.
+# HDMI out on the E850-96: DPU (DECON -> DSIM0) + LT8912B bridge; text console (tty1) on it.
 # fb-hold.py keeps /dev/fb0 open: closing the last fd turns DECON/DSIM (and the panel power) off.
 [Unit]
 Description=E850-96 HDMI output (DPU + LT8912B)

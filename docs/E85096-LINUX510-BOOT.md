@@ -751,3 +751,53 @@ root@e850-96:~# modprobe is-cis-ov5647
 - **픽셀 형식:** `V4L2_PIX_FMT_SBGGR10`. 이 BSP는 한 줄을 `ALIGN(w*5/4, 16)` 바이트(packed 10-bit)로 잡는다.
 
 다음: VT 커널과 vender DT로 다시 굽고 `v4l2-ctl -d /dev/video102 -i 0x10201 --set-fmt-video=... --stream-mmap`.
+
+### 9.3 HDMI 텍스트 콘솔 — fbcon이 DECON에서 동작하게 하기
+
+VT를 켠 첫 부팅에서 패닉이 났다.
+
+```text
+Console: switching to mono frame buffer device 240x67
+Kernel panic - not syncing: CFI failure (target: 0x0)    fbcon_cursor ← fbcon_fb_registered
+```
+
+| 증상 | 원인 | 해결 (`modules/e850-hdmi/apply.sh`) |
+|---|---|---|
+| CFI failure target 0x0 | Android DECON `fb_ops`에 `fb_fillrect/copyarea/imageblit`이 없음(NULL) | `cfb_fillrect/cfb_copyarea/cfb_imageblit` 연결 |
+| modpost: `cfb_*` undefined | `FB_CFB_*`는 select 전용이라 손으로 켠 값을 olddefconfig가 지움 | `EXYNOS_DPU30`이 `select FB_CFB_*` (Kconfig 패치) |
+| `cfb_imageblit` NULL 쓰기 | `decon_fb_alloc_memory()`가 vmap → memset → **vunmap + `screen_base = NULL`** | 두 줄 삭제(버퍼는 `system-uncached` 힙이라 캐시 문제 없음) |
+
+결과: HDMI에 `e850-96 login:` 프롬프트가 나온다(2026-11-01 확인). 키보드가 없어서(USB host 꺼짐) tty1도 root 자동 로그인으로 둔다(`getty@tty1.service.d/autologin.conf`). 보드 셸에서 `명령 | tee /dev/tty1`을 쓰면 결과를 모니터로 볼 수 있다.
+
+### 9.4 OV5647 — Linux 드라이버로 칩 ID 읽기 성공
+
+`S_INPUT(0x10201)` 첫 시도:
+
+```text
+[M219] pin_ctrl(act(1), pin(96), val(1), nm(cam_gpio high (module power enable))
+exynos5-hsi2c 138c0000.hsi2c: HSI2C Error Interrupt occurred(IS:0x00000400, ...)
+sensor_ov5647_cis_init: chip ID read failed (-6)
+```
+
+원인은 **CAM_VDD_33(PMIC LDO32)이 꺼져 있었던 것**이다. Android 10에서는 이미 켜져 있었는데(그래서 CAM_GPIO만 올려도 칩 ID가 읽혔음), Linux에서는 쓰는 곳이 없어서 꺼진다. `regulator_summary`에서 확인한 값은 `vdd_ldo32 state=disabled uV=2800000`이었다. 게다가 전압도 다르다. Android 10 DT는 3.3 V(`0x325aa0`), ERD PMIC dtsi는 2.8 V다.
+
+수정 (`s5e3830-e850-ov5647-camera.dtsi`):
+
+```dts
+&l32_reg { regulator-min-microvolt = <3300000>; regulator-max-microvolt = <3300000>; };
+power_seq / scenario_normal_on:
+    10 vdd_ldo32 on (PIN_REGULATOR 1 2000) → 20 cam_gpio low → 30 cam_gpio high (20 ms) → 40 on_i2c
+scenario_normal_off: off_i2c → cam_gpio low → vdd_ldo32 off
+```
+
+```text
+[M219] pin_ctrl(act(5), pin(0), val(1), nm(vdd_ldo32)
+[M219] pin_ctrl(act(1), pin(96), val(0), nm(cam_gpio low)
+[M219] pin_ctrl(act(1), pin(96), val(1), nm(cam_gpio high (module power enable))
+[M219] pin_ctrl(act(6), pin(0), val(1), nm(on_i2c)
+sensor_ov5647_cis_init: OV5647 chip ID 0x5647            ← Linux 5.10 Pablo 드라이버에서 성공
+[MOD:OV5647] sensor_module_init(0)
+[SS1:D] is_sensor_s_input(in:1, sce:0)(pos:1)-0
+```
+
+다음: `S_FMT`(640×480 SBGGR10) → `REQBUFS` → `STREAMON`으로 RAW 프레임 받기.

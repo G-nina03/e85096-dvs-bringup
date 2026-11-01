@@ -37,6 +37,13 @@ ExecStart=-/sbin/agetty --autologin root --keep-baud 115200 %I $TERM
 EOT
 chroot $R systemctl enable serial-getty@ttyGS0.service
 chroot $R systemctl mask serial-getty@ttySAC0.service
+# HDMI text console (tty1, fbcon): autologin too - there is no keyboard yet (USB host is off)
+mkdir -p $R/etc/systemd/system/getty@tty1.service.d
+cat > $R/etc/systemd/system/getty@tty1.service.d/autologin.conf <<'EOT'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+EOT
 
 # Network over the USB NCM gadget: the board is 192.168.7.1 and hands the Mac an address
 mkdir -p $R/etc/systemd/network
