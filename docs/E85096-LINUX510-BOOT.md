@@ -1115,7 +1115,7 @@ lockup 당시 CPU1의 hrtimer 인터럽트 수가 0이었다. MCT 로컬 타이�
 
 ### 11.4 남은 일
 
-1. **CPU2~7 하나씩 켜기**: 15초 간격으로 켜는 시험을 시작했다. 맥 쪽 네트워크가 끊겨서 결과는 아직 확인하지 못했다.
+1. **CPU2~7 하나씩 켜기** — 11.6절. CPU2·3·4는 켜지지 않는다(보드는 멈추지 않음).
 2. 8개가 다 되면 `maxcpus=1`을 빼고 boot.img를 다시 만든다.
 3. 그다음 카메라 실시간 영상(9.8)의 fps를 다시 잰다.
 
@@ -1128,3 +1128,21 @@ lockup 당시 CPU1의 hrtimer 인터럽트 수가 0이었다. MCT 로컬 타이�
   sed -i 's/^EmitDNS=no$/EmitDNS=no\nEmitRouter=no/' /etc/systemd/network/10-usb0.network && systemctl restart systemd-networkd
   ```
 - 맥(바로 적용): 시스템 설정 → 네트워크 → … → 서비스 순서 설정에서 Wi-Fi를 맨 위로 올린다.
+
+### 11.6 CPU2~4: `failed to come online` (멈춤 없음)
+
+MCT를 뺀 이미지에서 CPU1을 켠 상태(`online 0-1`)로 시험했다.
+
+```text
+echo 1 > /sys/devices/system/cpu/cpu2/online   → rc=1
+CPU2: failed to come online
+CPU2: failed in unknown state : 0x0
+```
+
+CPU3·CPU4(다른 클러스터, MPIDR 0x10000)도 같다. 보드는 리셋되지 않고 CPU 0~1로 계속 동작한다.
+
+- DT: 8개 모두 `enable-method = "psci"`이고 MPIDR은 0x0, 0x100, 0x200, 0x300, 0x10000 … 순서로 정상이다.
+- `__cpu_up()`(arch/arm64/kernel/smp.c)은 PSCI `CPU_ON`이 성공을 돌려준 뒤 5초를 기다린다. 상태 0x0은 그 코어가 커널 진입점(`secondary_entry`)에 한 번도 들어오지 못했다는 뜻이다. 그러니 커널 쪽 lockup(CPU1 때의 MCT 문제)과는 다른 문제다. 펌웨어(EL3)나 전원 쪽에서 코어가 실제로 켜지지 않는다.
+- exynos-cpuhp: `available cpu 0xff`, `set online cpu 0xff`, `cpu_online_mask 0x3`. Samsung hotplug 드라이버가 막고 있지는 않다.
+
+다음에 볼 것: CPU1만 켜지는 이유(부팅 때 LK/EL3가 CPU1만 미리 준비했는지), `exynos-cpupm`의 cluster/core 전원 콜백, Android 10에서 8코어가 켜질 때의 PMU/ACPM 순서.
