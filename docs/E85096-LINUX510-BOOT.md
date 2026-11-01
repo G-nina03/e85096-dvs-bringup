@@ -1118,7 +1118,7 @@ lockup 당시 CPU1의 hrtimer 인터럽트 수가 0이었다. MCT 로컬 타이�
 1. ~~CPU2~7 켜기~~ — **해결(11.8절). 8코어 모두 동작.**
 2. ~~`maxcpus=1` 빼기~~ — 11.8절에서 함께 반영.
 3. ~~카메라 fps 다시 재기~~ — 11.10절. 그대로 12~16 fps.
-4. ~~장시간 안정성~~ 통과(11.11). 남음: `cpuidle.off=1` 빼기는 실패(11.12, 유지), ~~hotplug~~ 해결(11.13), ~~카메라 fps~~ 55~63 fps로 해결(11.10).
+4. ~~장시간 안정성~~ 통과(11.11). 남음: `cpuidle.off=1` 빼기는 실패(11.12, 펌웨어 문제로 보여 보류), ~~hotplug~~ 해결(11.13), ~~카메라 fps~~ 55~63 fps로 해결(11.10).
 
 ### 11.5 보드를 USB로 연결하면 맥의 인터넷이 끊기는 문제
 
@@ -1274,7 +1274,22 @@ live: 60 frames, 16.0 fps / 90: 12.0 / 120: 15.8 / 150: 13.4 / 180: 14.1
 - 7.17(1코어)에서는 initramfs가 끝나고 첫 idle에서 멈췄다. 8코어에서는 CPU1~7이 부팅 직후부터 idle이라 훨씬 일찍 멈추는 것으로 보인다. 다만 이 시점에는 exynos cpuidle 드라이버(모듈, 4.2초)가 아직 없다. 그러니 idle은 WFI뿐이어야 한다. `cpuidle.off=1`이 있을 때와 무엇이 다른지는 아직 모른다. 한 번만 시험했으므로 재현성도 확인하지 않았다.
 - 복구(04:40): 전원을 껐다 켜자 LK가 fastboot에 들어갔다. 미리 띄워 둔 대기 루프(`until fastboot devices | grep -q fastboot; ...`)가 `boot-nokvm`을 다시 구웠다(`fastboot reboot`가 `usb_read failed`를 내도 재부팅은 된다). 다시 8코어, `cpuidle.off=1`로 정상이다.
 - hotplug(11.9)와 같은 뿌리로 보인다. 둘 다 코어가 전원을 끄거나 깊은 idle에 들어간 뒤, Android 10 시절 BL31이 그 코어를 다시 깨우는 경로를 거친다.
-- 결론: 당분간 `cpuidle.off=1`을 유지한다. 다시 시험한다면 `s3c2410_wdt.tmr_atboot=1`(커널이 워치독을 부팅 때부터 켬)도 함께 넣어, 멈춰도 사람 손 없이 fastboot로 돌아오게 한다.
+- 결론: 당분간 `cpuidle.off=1`을 유지한다.
+
+**두 번째 시도 (2026-11-02 05~06시): C2를 허용하면 들어간 코어가 깨어나지 않는다.** 실험 코드는 저장소에 넣지 않았다(Mac `~/e850-logs/e850-cpuhp-c2-experiment.c`).
+
+| 구성 | 결과 |
+|---|---|
+| `cpuidle.off=1` 제거 + DT C2에 `wakeup-latency-us = 0xf0000000`(governor가 고르지 않음) | 부팅 정상, `psci_idle` 드라이버 동작, WFI만 사용. 1.9초 멈춤은 C2(PSCI `CPU_SUSPEND` 0x10000, 코어 전원 끔) 때문이었다 |
+| 모듈로 latency를 230 µs로 되돌림 + cpu_pm notifier에서 hotplug와 같은 PMU 쓰기(INT_EN bit3 포함) | CPU3~7이 C2에서 돌아오지 않음. `rcu_preempt kthread starved ... ->cpu=3`: C2에서 arch timer가 멈춘다 |
+| + DT에 `local-timer-stop`(broadcast는 `bc_hrtimer`) | 타이머 문제는 사라졌지만, CPU4가 다른 코어로 보낸 IPI(`smp_call_function_single`)에서 영원히 기다림 → soft lockup |
+| notifier 제거(PMU 쓰기는 vendor `exynos-cpupm` 훅만), CPU7 또는 CPU6~7만 허용 | 허용된 코어가 C2에 들어간 뒤 돌아오지 않음(`workqueue lockup - pool cpus=7`). `usage`는 C2에서 나올 때 오르므로 계속 0이었다 |
+
+- Android 10 DT의 C2도 같은 PSCI 값(0x10000)과 latency를 쓴다. 다만 `compatible = "exynos,idle-state"`라서 4.14의 Samsung 전용 cpuidle 드라이버가 처리했다.
+- Linaro의 Exynos850 hotplug 시리즈 v7 소개글(2026-09-30): "As a next steps it will be possible to enable idle states on top of it (if we get our hands on correct firmware)." Linaro도 지금 펌웨어로는 E850-96의 idle 상태를 켜지 못했다. 사용자 정리 문서는 [E85096-C2-CPUIDLE-REFERENCE-20261102.md](E85096-C2-CPUIDLE-REFERENCE-20261102.md).
+- 하지 않은 시험: C2 진입 직전에 GIC-400 CPU 인터페이스(GICC_CTLR.Enable)를 끄기. 커널 GICv2 드라이버는 `CPU_PM_ENTER`에서 레지스터를 저장만 한다.
+- 결론: C2는 펌웨어(BL31/APM) 문제일 가능성이 크다. 보드는 `boot-nokvm`(`cpuidle.off=1`)으로 되돌렸다. C2를 막은 부트 이미지(`~/e850-logs/boot-c2t`)는 `cpuidle.off=1` 없이도 부팅되지만 얻는 것이 없다(WFI만 쓰므로 같다).
+- 덤으로 알게 된 것: 멈춘 상태에서도 워치독 데몬이 살아 있는 CPU에서 계속 신호를 보낼 수 있다. 그래서 리셋까지 몇 분이 걸리거나 전원을 껐다 켜야 할 수 있다. 다시 시험한다면 `s3c2410_wdt.tmr_atboot=1`(커널이 워치독을 부팅 때부터 켬)도 함께 넣어, 멈춰도 사람 손 없이 fastboot로 돌아오게 한다.
 
 ### 11.13 해결: CPU hotplug (`modules/e850-cpuhp`)
 
@@ -1302,3 +1317,15 @@ docker run --rm -v ~/e850-a13-build:/work -v e850-kernel:/work/kernel -v e850-ou
 ```
 
 다음: `cpuidle.off=1`(11.12)도 같은 깨우기 경로를 쓴다. C2 idle에 들어가기 전과 나온 뒤에도 같은 PMU 쓰기가 필요할 것이다. mainline 시리즈도 idle은 "후속 작업"으로 남겨 두었다.
+
+### 11.14 HDMI 텍스트 콘솔 색 (흰 글씨) (`modules/e850-fbpal`)
+
+명령줄 `vt.default_*`로 기본 글자색(7번)을 흰색으로 정했는데도 화면 글자가 진한 파랑으로 나왔다. framebuffer 픽셀을 직접 읽어(`/root/fbhist.py`: fb0 mmap의 색 히스토그램) 원인 셋을 찾았다.
+
+1. fb0의 `fix.visual`이 부팅 때 **MONO01(0)**이다. fbcon은 붙을 때 한 번만 컬러/흑백을 정하므로 흑백 모드가 된다. 흑백 모드에서는 ANSI 색을 무시하고 "보통 = 1번, 굵게 = 2번" 색으로 그린다(측정: 모든 색이 0xaa0000, 굵게는 0xaa00).
+2. DPU의 `decon_setcolreg()`는 DECON이 꺼짐이나 hibernation이면 팔레트 쓰기를 버린다. 그래서 콘솔이 팔레트를 다시 넣어도(`ESC ] R`) 반영되지 않는다.
+3. pseudo-palette는 VGA 순서(1 = 파랑, 4 = 빨강)다. ANSI 순서인 `default_red/grn/blu`를 그대로 넣으면 빨강과 파랑이 바뀐다.
+
+`e850-fbpal.ko`는 32bpp RGB면 `fix.visual = TRUECOLOR`로 고치고, `default_*`를 VGA 순서로 바꿔 fb0의 pseudo-palette에 직접 쓴다. `e850-hdmi.service`가 LT8912B 설정 뒤 이 모듈을 올리고 fbcon을 다시 붙인다(`vtcon1/bind` 0 → 1).
+
+결과(재부팅 후): 검정 배경(0x000000), 흰 글씨(0xffffff). `\033[31m/32m/34m`이 각각 0xaa0000, 0xaa00, 0xaa로 나와 색 순서도 맞다. 화면을 눈으로 보는 확인은 사용자에게 부탁한다.
