@@ -68,7 +68,10 @@ fdtoverlay -i $DTS/s5e3830.dtb -o /out/merged.dtb $DTS/board/erd/s5e3830-erd3830
 # (docs 7.17: 6 s with stage-1 modules, right after the last module with all of them).
 # panic=0: stay in the panic instead of a normal reboot (which LK boots straight into Linux
 # again); the hardware watchdog then resets the SoC and LK stops in fastboot (docs 7.18).
-CMDLINE="console=ram keep_bootcon earlycon=exynos4210,mmio32,0x13820000 cpuidle.off=1 panic=0 maxcpus=1 clocksource=arch_sys_counter clk_ignore_unused printk.devkmsg=on loglevel=8 ignore_loglevel firmware_class.path=/lib/firmware $ROOTARG"
+# HDMI text console: 16x32 font (2x the 8x16 default) and white text (VT palette entry 7, the
+# default foreground, from light grey 170,170,170 to 255,255,255)
+VTPAL="vt.default_red=0,170,0,170,0,170,0,255,85,255,85,255,85,255,85,255 vt.default_grn=0,0,170,85,0,0,170,255,85,85,255,255,85,85,255,255 vt.default_blu=0,0,0,0,170,170,170,255,85,85,85,85,255,255,255,255"
+CMDLINE="console=ram keep_bootcon earlycon=exynos4210,mmio32,0x13820000 cpuidle.off=1 panic=0 maxcpus=1 fbcon=font:TER16x32 $VTPAL clocksource=arch_sys_counter clk_ignore_unused printk.devkmsg=on loglevel=8 ignore_loglevel firmware_class.path=/lib/firmware $ROOTARG"
 # The stock bootargs also start the watchdog at boot (s3c2410_wdt.tmr_atboot=1); without
 # Android's watchdogd nobody pings it, so it is left out here.
 fdtput -t s /out/merged.dtb /chosen bootargs "$CMDLINE"

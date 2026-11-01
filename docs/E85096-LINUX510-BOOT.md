@@ -827,3 +827,30 @@ sensor_ov5647_cis_init: OV5647 chip ID 0x5647            ← Linux 5.10 Pablo �
 2. 아니면 3AA 노드도 열어 ischain을 연결한다. ISP 펌웨어(`is_lib.bin`)가 필요할 수 있다.
 
 DT 변경(이번에 추가): `exynos_is/vender/front_sensor_id = 219`, LDO32 3.3 V + power_seq, VISION scenario용 power_seq.
+
+### 9.6 ISP 없이(bypass) 센서 그룹 돌리기 — `modules/ov5647-pablo/bypass.sh`
+
+OV5647은 ISP가 필요 없는 RAW 센서다. 경로는 CSIS(MIPI 수신) → WDMA → 메모리다. 그런데 Pablo는 센서 그룹 뒤에 ISP 체인(ischain)이 있다고 가정해서, 아래 다섯 곳을 고쳤다. stand-alone(VISION) 모드는 이 BSP에서 `is_groupmgr_init`이 Oops를 내서 쓰지 않는다.
+
+| # | 위치 | 증상 | 패치 |
+|---|---|---|---|
+| 1 | `is_group_buffer_queue` | `BUG(!sensor)` | `device->sensor`가 없으면 `group->sensor` |
+| 2 | `is_hw_camif_cfg` | `ischain is null` → back_start -ENODEV | ischain이 없으면 CSIS→3AA OTF mux 설정 생략 |
+| 3 | `is_sensor_s_input` | `is_group_start: BUG(!group->device->sensor)` | `group->device->sensor = sensor` (반대 방향 `sensor->ischain`은 NULL 유지 → ISP 펌웨어 호출 생략) |
+| 4 | `is_sensor_s_input` | `is_sensor_shot` NULL(`group->head`) | 센서 그룹 혼자 `head = tail = group` |
+| 5 | `tasklet_csis_str_otf` | 프레임 시작 tasklet에서 NULL+0x20 | ischain이 없으면 센서 그룹의 `smp_trigger`만 처리 |
+
+사용자 공간(`ov5647-cap.py`)에서 알아낸 규칙:
+
+- **`V4L2_CID_IS_S_STREAM`(0x009a100e) = 1:** STREAMON은 CSIS/DMA 쪽(back start)만 켠다. 센서 스트리밍(front start)은 이 컨트롤로 켠다.
+  ```text
+  Sensor Stream On ... [CSI1] settle(640x480@60) = 15, speed(275 Mbps), 2 lane ... [CSI1][VC0] size(640x480)
+  sensor_ov5647_cis_stream_on: stream on        ← 프레임 카운트 F2, F3, ...가 약 16 fps로 증가
+  ```
+- **메타 플레인의 shot magic:** `camera2_shot_ext.shot.magicNumber`는 메타 플레인 오프셋 `0xb38 + 0xbc98 = 51152`에 있고, 값은 `0x92345678`(v8_20_0)이다. 오프셋은 `llvm-dwarfdump --name=camera2_shot_ext fimc-is.ko`로 구했다. 이 값이 없으면 `shot magic number error`로 프레임이 취소된다.
+- **`STREAMON`을 먼저 하고 그다음 `QBUF`:** STREAMON 전에 큐에 넣은 버퍼는 vb2가 `start_streaming`보다 먼저 드라이버로 넘긴다. 그러면 그 shot들이 `is_group_start()`보다 먼저 실행되고, `is_group_start()`가 대기 중인 세마포어(`smp_resource`)를 `sema_init()`으로 다시 초기화한다. 그 결과 그룹 스레드가 영원히 깨어나지 못한다. `/proc/<is_gw13>/stack`의 `down_interruptible ← is_group_shot`과, 양쪽에서 찍은 세마포어 주소가 같다는 것으로 확인했다.
+- **OUTPUT 큐 완료 신호:** 완료된 버퍼는 POLLOUT(쓰기 가능)으로 알린다.
+
+**현재 상태:** DQBUF로 버퍼가 약 15 fps로 돌아온다. 그러나 이미지 플레인에는 데이터가 없다(시작 표시값 0x5a 그대로). Pablo에서 RAW(VC0)는 leader(`/dev/video102`)가 아니라 **VC 캡처 노드**(`ssdevice_idvc0` = `/dev/video214`)로 DMA된다. 다음은 그 노드를 열고, leader 메타의 `node_group.capture[]`에 VC0 요청을 넣는 일이다.
+
+보드에 빠르게 파일을 보내는 도구(raw tty + `head -c`, 7.6 MB를 5초에 전송): 맥에서 `python3 acmpush2.py fimc-is.ko /tmp/fimc-is.ko`.

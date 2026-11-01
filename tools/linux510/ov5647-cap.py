@@ -6,8 +6,8 @@ V4L2 MPLANE node (OUTPUT type: it leads the sensor group), but it does not imple
 This calls the ioctls directly:
   S_INPUT(position 1, vindex 2 = IS_VIDEO_SS1_NUM, leader 1) -> S_CTRL(S_SENSOR_SIZE) ->
   S_FMT(SBGGR10) ->
-  REQBUFS(DMABUF, buffers from /dev/dma_heap/system-uncached) -> QBUF -> STREAMON ->
-  DQBUF x N -> STREAMOFF
+  REQBUFS(DMABUF, buffers from /dev/dma_heap/system-uncached) -> STREAMON -> QBUF ->
+  S_CTRL(S_STREAM on) -> DQBUF x N -> STREAMOFF
 
     ov5647-cap.py [-W 640] [-H 480] [-n 5] [-o /tmp/ov5647]   -> /tmp/ov5647_<i>.raw
 Each file is one plane-0 buffer: packed RAW10, stride ALIGN(width*5/4, 16).
@@ -34,14 +34,20 @@ VIDIOC_STREAMOFF = 0x40045613
 VIDIOC_S_INPUT = 0xc0045627
 VIDIOC_S_CTRL = 0xc008561c
 CID_IS_S_SENSOR_SIZE = 0x009a0000 | 0x1000 | 69   # V4L2_CID_FIMC_IS_BASE + 69
+CID_IS_S_STREAM = 0x009a0000 | 0x1000 | 14        # sensor (front) stream on/off: sstream in bits 3:0
 # the sensor node is a group *leader*: its vb2 queue is OUTPUT_MPLANE (is-video.c queue_init)
 BUF_TYPE = 10                           # V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE
 PIX_FMT_SBGGR10 = 0x30314742            # 'BG10'
 INPUT = (1 << 16) | (2 << 8) | 1        # position 1 (FRONT), vindex 2 (SS1), leader
+# The leader's meta plane holds struct camera2_shot_ext; the group checks shot.magicNumber.
+# Offsets from the fimc-is.ko DWARF (llvm-dwarfdump): shot_ext.shot @0xb38, shot.magicNumber @0xbc98
+SHOT_MAGIC = 0x92345678                 # vendor/default/v8_20_0/is-metadata-vendor.h
+SHOT_MAGIC_OFFSET = 0xb38 + 0xbc98      # = 51152 in the 51200-byte meta plane
 
 
 def log(msg):
-    print(msg, flush=True)
+    up = open('/proc/uptime').read().split()[0]      # same clock as dmesg, roughly
+    print('[%8s] %s' % (up, msg), flush=True)
 
 
 ap = argparse.ArgumentParser()
@@ -50,8 +56,8 @@ ap.add_argument('-H', type=int, default=480)
 ap.add_argument('-n', type=int, default=5, help='frames to save')
 ap.add_argument('-b', type=int, default=4, help='buffers')
 ap.add_argument('-o', default='/tmp/ov5647')
-ap.add_argument('-s', type=int, default=1,
-                help='sensor scenario: 0 normal (needs the ISP chain), 1 vision = stand-alone sensor')
+ap.add_argument('-s', type=int, default=0,
+                help='sensor scenario: 0 normal (with modules/ov5647-pablo/bypass.sh), 1 vision/stand-alone (oopses in this BSP)')
 ap.add_argument('-t', type=float, default=5.0, help='DQBUF timeout per frame, s')
 a = ap.parse_args()
 
@@ -122,6 +128,8 @@ bufs = []                                   # per buffer: [(dmabuf fd, mmap), ..
 
 
 def qbuf(i):
+    if nplanes > 1:                         # meta plane: valid camera2_shot magic, or the frame is cancelled
+        bufs[i][-1][1][SHOT_MAGIC_OFFSET:SHOT_MAGIC_OFFSET + 4] = struct.pack('<I', SHOT_MAGIC)
     pl = bytearray(64 * nplanes)            # must stay alive during the ioctl (holds its address)
     for p, (dfd, _) in enumerate(bufs[i]):
         struct.pack_into('IIi', pl, p * 64, lengths[p], lengths[p], dfd)   # bytesused, length, m.fd
@@ -135,17 +143,26 @@ for i in range(nbuf):
         planes.append((dfd, mmap.mmap(dfd, lengths[p], mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)))
     bufs.append(planes)
     bufs[i][0][1][:4096] = b'\x5a' * 4096   # marker: still 0x5a after DQBUF = DMA never wrote
-    qbuf(i)
-log('allocated and queued %d buffers' % nbuf)
+log('allocated %d buffers' % nbuf)
 
+# STREAMON *before* QBUF: buffers queued earlier are handed to the driver ahead of start_streaming,
+# their group shots run before is_group_start(), which then sema_init()s the group's
+# smp_resource under a waiting shot -> the group thread never wakes up (no frame ever done).
 fcntl.ioctl(fd, VIDIOC_STREAMON, struct.pack('I', BUF_TYPE))
 log('STREAMON')
+for i in range(nbuf):
+    qbuf(i)
+log('queued %d buffers' % nbuf)
+# STREAMON starts the CSIS/DMA side ("back start"); the sensor itself streams on S_STREAM
+fcntl.ioctl(fd, VIDIOC_S_CTRL, struct.pack('Ii', CID_IS_S_STREAM, 1))
+log('S_CTRL S_STREAM on')
 saved = 0
 t0 = time.time()
 try:
     while saved < a.n:
-        r, _, _ = select.select([fd], [fd], [], a.t)
-        if not r and not _:
+        # OUTPUT queue: a finished buffer shows up as POLLOUT (writable)
+        r, w, _x = select.select([fd], [fd], [], a.t)
+        if not r and not w:
             log('timeout: no frame in %.1f s' % a.t)
             break
         pl = bytearray(64 * nplanes)
@@ -167,6 +184,10 @@ try:
         bufs[idx][0][1][:4096] = b'\x5a' * 4096
         qbuf(idx)
 finally:
+    try:
+        fcntl.ioctl(fd, VIDIOC_S_CTRL, struct.pack('Ii', CID_IS_S_STREAM, 0))
+    except OSError as e:
+        log('S_STREAM off: %s' % e)
     fcntl.ioctl(fd, VIDIOC_STREAMOFF, struct.pack('I', BUF_TYPE))
     log('STREAMOFF after %.1f s, %d frame(s)' % (time.time() - t0, saved))
 sys.exit(0 if saved else 1)

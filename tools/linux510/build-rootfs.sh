@@ -68,6 +68,8 @@ install -m 755 /t/to-fastboot $R/usr/local/sbin/to-fastboot
 install -m 755 /t/lt8912b-hdmi.sh $R/usr/local/sbin/lt8912b-hdmi.sh
 install -m 755 /t/fb-test.py $R/usr/local/bin/fb-test.py
 install -m 755 /t/fb-hold.py $R/usr/local/bin/fb-hold.py
+install -m 755 /t/ov5647-cap.py $R/usr/local/bin/ov5647-cap.py
+install -m 755 /t/raw10-view.py $R/usr/local/bin/raw10-view.py
 install -m 644 /t/e850-hdmi.service $R/etc/systemd/system/e850-hdmi.service
 chroot $R systemctl enable e850-hdmi.service
 
