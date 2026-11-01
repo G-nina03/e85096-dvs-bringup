@@ -1060,3 +1060,61 @@ systemctl daemon-reload && systemctl enable e850-wifi
 
 확인 결과: 재부팅하고 약 1분 뒤 `systemctl is-active e850-wifi` → `active`.
 wlan0은 DHCP로 192.168.0.236을 받았고, `ping 8.8.8.8`이 응답했습니다.
+
+---
+
+## 11. 서비스(SSH·웹)와 CPU 코어 켜기
+
+### 11.1 SSH·SFTP·웹 서버
+
+Wi-Fi(10장)가 되면 Debian arm64 패키지를 `apt`로 바로 받는다. 커널·드라이버와 상관없는 사용자 프로그램이다.
+
+```sh
+printf 'deb http://deb.debian.org/debian bookworm main\ndeb http://deb.debian.org/debian bookworm-updates main\ndeb http://security.debian.org/debian-security bookworm-security main\n' > /etc/apt/sources.list
+apt-get update && apt-get install -y systemd-timesyncd sudo nginx
+useradd -m -s /bin/bash -G sudo <사용자> && passwd <사용자>   # Debian 기본값은 root 비밀번호 SSH 로그인 차단
+```
+
+| 서비스 | 확인 |
+|---|---|
+| SSH / SFTP (`openssh-server`, 이미 설치됨) | 맥에서 `ssh <사용자>@192.168.0.236` → `SSH-2.0-OpenSSH_9.2p1` |
+| nginx | 맥에서 `http://192.168.0.236/` → HTTP 200 |
+| 시간 동기화 | 보드 시계가 2026년 4월로 시작한다. timesyncd가 없으면 `apt`·HTTPS가 날짜 오류를 낸다 |
+
+FTP(vsftpd)는 비밀번호가 평문으로 가므로 넣지 않았다. 파일 전송은 SFTP를 쓴다.
+
+### 11.2 CPU가 1개만 켜진 이유
+
+`/proc/cmdline`의 `maxcpus=1`은 Samsung DT bootargs에 원래 있던 값이다. 커널은 8개를 인식한다(`possible 0-7`, `online 0`). 부팅 옵션을 바꾸지 않고 실행 중에 코어를 하나씩 켜서 시험한다.
+
+```sh
+echo 1 > /sys/devices/system/cpu/cpu1/online
+cat /sys/devices/system/cpu/online
+```
+
+### 11.3 CPU1 lockup — 원인은 MCT 타이머
+
+| 시도 | 결과 |
+|---|---|
+| 그냥 켜기 | 몇 초 뒤 `Watchdog detected hard LOCKUP on cpu 1` → 리셋 → fastboot |
+| CPU1을 바쁘게 한 상태에서 켜기 | 같음 |
+| `exynos-ecc-handler` 제거(IRQ 71) | 같음 |
+| `exynos_mct`·`hardlockup-watchdog` 제거, arch_timer만 사용 | **CPU1이 30초 넘게 동작, 타이머 인터럽트 934회** |
+
+lockup 당시 CPU1의 hrtimer 인터럽트 수가 0이었다. MCT 로컬 타이머가 인터럽트를 올려도(`INTCSTAT=1`) CPU1까지 전달되지 않았다. 그래서 tick을 받지 못한 CPU1을 hardlockup 감시가 lockup으로 판정했다. ARM arch timer는 코어마다 PPI로 직접 인터럽트를 받으므로 이 문제가 없다.
+
+반영한 것(세 군데 모두 빼야 한다):
+
+- `tools/linux510/modules.stage1`: `exynos_mct` 줄을 주석 처리. stage1에 이름으로 따로 들어 있어서 deny 목록에 걸리지 않는다.
+- `tools/linux510/autoload.deny`: `^exynos-ecc-handler`, `^exynos_mct`, `^hardlockup.watchdog` 추가. 파일 이름이 `hardlockup-watchdog.ko`(대시)라서 `.`으로 맞춘다. `vendor_boot_module_order_s5e3830.cfg`에서 온 항목도 이 목록으로 걸러진다.
+- 보드 rootfs: `/etc/modprobe.d/e850-blacklist.conf`에 `blacklist exynos_mct`, `blacklist hardlockup-watchdog`, `blacklist exynos-ecc-handler`. udev가 다시 올리지 않게 한다. `build-rootfs.sh`는 `autoload.deny`로 이 파일을 만들므로 새 rootfs에는 자동으로 들어간다.
+
+검증: 새 boot.img의 initramfs에서 `modules.load`·`modules.stage1`에 `mct|hardlockup|ecc`가 없음을 확인했다. 플래시 후 정상 부팅됐고, `lsmod`에도 셋 다 없었다.
+
+부작용: hardlockup 감시가 없어진다. 멈춤 복구는 `s3c2410_wdt` 대신 쓰는 사용자 공간 `watchdog` 데몬에 맡긴다.
+
+### 11.4 남은 일
+
+1. **CPU2~7 하나씩 켜기**: 15초 간격으로 켜는 시험을 시작했다. 맥 쪽 네트워크가 끊겨서 결과는 아직 확인하지 못했다.
+2. 8개가 다 되면 `maxcpus=1`을 빼고 boot.img를 다시 만든다.
+3. 그다음 카메라 실시간 영상(9.8)의 fps를 다시 잰다.

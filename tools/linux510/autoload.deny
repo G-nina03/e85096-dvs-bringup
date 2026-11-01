@@ -26,3 +26,6 @@
 ^dss
 ^phy-exynos-mipi-dsim
 ^exynos_tty
+^exynos-ecc-handler
+^exynos_mct
+^hardlockup.watchdog

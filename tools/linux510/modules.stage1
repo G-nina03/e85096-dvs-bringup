@@ -4,7 +4,7 @@
 exynos-chipid_v2
 exynos-reboot
 clk_exynos
-exynos_mct
+# exynos_mct: left out, the ARM arch timer is the tick (MCT local timer IRQs never reach CPU1-7)
 pinctrl-samsung-core
 i2c-exynos5
 i2c-s3c2410
