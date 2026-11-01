@@ -709,3 +709,45 @@ fb-test.py                      # 다른 그림을 그리려면 fb-hold.py를 �
 ```
 
 적용 방법(커널 트리): `sh modules/e850-hdmi/apply.sh /work/kernel` → `make ... modules dtbs`.
+
+## 9. 진행 중: HDMI 로그인 프롬프트와 OV5647 캡처
+
+### 9.1 HDMI에 로그인 프롬프트 (VT + fbcon)
+
+GKI 설정에는 `# CONFIG_VT is not set`이 들어 있다. 그래서 프레임버퍼 콘솔(fbcon)과 `tty1`이 없다. 아래 설정을 켜고 다시 빌드한다(전: `.config.before-vt`). Debian에는 `getty@tty1`이 기본으로 켜져 있어서, 이 커널이면 HDMI에 `e850-96 login:`이 뜰 것으로 예상한다.
+
+```text
++ CONFIG_VT=y  CONFIG_VT_CONSOLE=y  CONFIG_HW_CONSOLE=y  CONFIG_VT_HW_CONSOLE_BINDING=y
++ CONFIG_CONSOLE_TRANSLATIONS=y  CONFIG_DUMMY_CONSOLE=y
++ CONFIG_FRAMEBUFFER_CONSOLE=y   (fb.ko 안에 fbcon.o가 들어간다. CONFIG_FB=m)
++ CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y  CONFIG_FONT_8x8=y (CONFIG_FONT_8x16=y는 원래 있음)
+```
+
+```bash
+scripts/config --file .config -e VT -e CONSOLE_TRANSLATIONS -e VT_CONSOLE -e HW_CONSOLE \
+    -e VT_HW_CONSOLE_BINDING -e DUMMY_CONSOLE -e FRAMEBUFFER_CONSOLE -e FRAMEBUFFER_CONSOLE_DETECT_PRIMARY
+make ... olddefconfig && make ... Image modules dtbs      # 공통 헤더가 바뀌어 대부분 재컴파일
+```
+
+### 9.2 OV5647: 모듈 적재까지 확인
+
+```text
+root@e850-96:~# modprobe fimc-is              # 패닉 없음 (power_seq use = <1> 이후)
+[@][SS1:D] is_sensor_probe(0)                  ← 우리 센서 인스턴스 1 (CSI1)
+exynos-is-sensor: probe of 14400000.is_sensor0 failed with error -22   ← ERD의 다른 슬롯, 무시
+root@e850-96:~# modprobe is-cis-ov5647
+[@]cis_ov5647_probe: OV5647 bound to sensor instance 1, addr 0x36
+/sys/bus/i2c/devices/7-0036/driver -> .../i2c/drivers/OV5647
+```
+
+센서 영상 노드: `/dev/video102` = `exynos-is-ss1` (VC 노드: video214~217 `ssdevice_idvc0~3`).
+
+캡처를 하려면 `S_INPUT` → `S_FMT`(MPLANE) → `REQBUFS`(MMAP) → `QBUF` → `STREAMON` 순서로 호출해야 한다.
+
+- **`S_INPUT` 값**(`CONFIG_USE_SENSOR_GROUP=y`, `is-video.h`):
+  - 비트 구성: scenario[31:26] stream[25:24] **position[23:16]** **vindex[15:8]** intype[7:4] **leader[3:0]**
+  - position 1(FRONT), vindex 2(`IS_VIDEO_SS1_NUM`), leader 1 → **`0x10201`**
+- **센서 찾기:** `is_sensor_s_input()`은 position 1(FRONT)의 센서를 `exynos_is/vender/front_sensor_id`로 찾는다. ERD 카메라 dtsi를 OV5647 dtsi로 바꾸면서 이 노드도 빠졌다. 그래서 OV5647 dtsi에 `front_sensor_id = <SENSOR_NAME_OV5647>`(219)를 넣었다.
+- **픽셀 형식:** `V4L2_PIX_FMT_SBGGR10`. 이 BSP는 한 줄을 `ALIGN(w*5/4, 16)` 바이트(packed 10-bit)로 잡는다.
+
+다음: VT 커널과 vender DT로 다시 굽고 `v4l2-ctl -d /dev/video102 -i 0x10201 --set-fmt-video=... --stream-mmap`.

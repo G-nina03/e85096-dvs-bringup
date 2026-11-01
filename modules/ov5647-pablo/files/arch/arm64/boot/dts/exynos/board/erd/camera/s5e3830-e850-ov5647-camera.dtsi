@@ -109,3 +109,11 @@
 
 	status = "okay";
 };
+
+/* S_INPUT(position 1 = FRONT) looks the sensor up by vender front_sensor_id. The ERD camera
+ * dtsi this file replaces used to set it (4H5YC); without the node it stays 0. */
+&exynos_is {
+	vender {
+		front_sensor_id = <SENSOR_NAME_OV5647>;	/* 219 */
+	};
+};
