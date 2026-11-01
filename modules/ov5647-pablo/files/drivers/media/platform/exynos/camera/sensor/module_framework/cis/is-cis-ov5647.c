@@ -194,6 +194,16 @@ static int sensor_ov5647_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * Mainline sets VTS through its vblank control, not the mode tables: without this the
+	 * sensor keeps the reset VTS 0x7b0 and VGA runs at ~16 fps instead of 60.
+	 */
+	ret = ov5647_write(cis, 0x380e, ov5647_modes[mode].vts >> 8);
+	if (!ret)
+		ret = ov5647_write(cis, 0x380f, ov5647_modes[mode].vts & 0xff);
+	if (ret < 0)
+		return ret;
+
 	ov5647_set_mode_data(cis->cis_data, mode);
 	ov5647_apply_exposure(cis);
 

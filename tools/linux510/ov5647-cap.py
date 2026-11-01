@@ -22,6 +22,7 @@ Each file is one VC0 frame: one little-endian u16 per pixel, 10 valid bits (raw1
     ov5647-cap.py --live [-n 0]      live video on HDMI (/dev/fb0) instead of files; -n 0 = forever
 """
 import argparse
+import atexit
 import ctypes
 import fcntl
 import mmap
@@ -75,6 +76,15 @@ ap.add_argument('-t', type=float, default=3.0, help='timeout per frame, s')
 ap.add_argument('-v', action='store_true', help='log every ioctl in the loop')
 ap.add_argument('--live', action='store_true', help='draw every frame on /dev/fb0, save nothing')
 a = ap.parse_args()
+
+# The boot command line has loglevel=8 ignore_loglevel: the driver's per-frame messages then go
+# out on the 115200 baud UART from the interrupt handler, CSIS loses interrupts and a 60 fps
+# stream drops to ~5 fps. Keep them in dmesg only while streaming.
+QUIET = (('/sys/module/printk/parameters/ignore_loglevel', 'N'), ('/proc/sys/kernel/printk', '1'))
+saved_printk = [open(f).read().split()[0] for f, _ in QUIET]
+for f, v in QUIET:
+    open(f, 'w').write(v)
+atexit.register(lambda: [open(f, 'w').write(v) for (f, _), v in zip(QUIET, saved_printk)])
 if a.live and a.n == 5:
     a.n = 0
 

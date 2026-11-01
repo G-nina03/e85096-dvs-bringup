@@ -1118,7 +1118,7 @@ lockup 당시 CPU1의 hrtimer 인터럽트 수가 0이었다. MCT 로컬 타이�
 1. ~~CPU2~7 켜기~~ — **해결(11.8절). 8코어 모두 동작.**
 2. ~~`maxcpus=1` 빼기~~ — 11.8절에서 함께 반영.
 3. ~~카메라 fps 다시 재기~~ — 11.10절. 그대로 12~16 fps.
-4. ~~장시간 안정성~~ 통과(11.11). 남음: `cpuidle.off=1` 빼 보기, hotplug(11.9), 카메라 fps(병목은 CPU가 아니라 센서 설정, 11.10).
+4. ~~장시간 안정성~~ 통과(11.11). 남음: `cpuidle.off=1` 빼 보기, hotplug(11.9), ~~카메라 fps~~ 55~63 fps로 해결(11.10).
 
 ### 11.5 보드를 USB로 연결하면 맥의 인터넷이 끊기는 문제
 
@@ -1247,6 +1247,16 @@ live: 60 frames, 16.0 fps / 90: 12.0 / 120: 15.8 / 150: 13.4 / 180: 14.1
 - 그런데 fps는 그대로였다(바꾸기 전 11.5~20, 바꾼 뒤 11.1~16.2). UART 로그의 `[bypass] FS`(프레임 시작) 간격이 대부분 60~65 ms였다. **센서가 초당 약 16장만 내보낸다.** 드라이버 로그에는 `sensor mode(640x480@60)`라고 나오지만, 실제 OV5647 PLL/VTS 설정(`0x3034=0x1a, 0x3035=0x21, 0x3036=0x46`)이 그만큼 빠르지 않다.
 - 그래서 더 빠르게 하려면 CPU 쪽이 아니라 센서 레지스터(PLL, HTS/VTS)를 고쳐야 한다. 30 fps 단위로 16과 11.4가 번갈아 나오는 것은 가끔 프레임을 놓치는 것이다. 원인은 아직 모른다.
 - 덤으로 알아낸 것: `rmmod fimc_is` 뒤에는 `modprobe fimc-is`가 `Device or resource busy`로 실패한다. 카메라 모듈을 다시 올리려면 재부팅해야 한다. 이 보드에서 `systemctl reboot`는 LK가 `Abnormal RST_STAT: 0x1000000`으로 보고 fastboot에 들어간다. Mac에서 `fastboot reboot`를 하면 정상 부팅한다.
+
+**센서 16 fps의 원인과 해결 (2026-11-02 04시): 이제 55~63 fps.**
+
+- 스트리밍 중에 I2C로 센서 레지스터를 읽었다(`/root/ovreg.py 7 380e 380f ...`, I2C_RDWR라 드라이버가 잡고 있어도 된다). VTS(0x380e/f)가 리셋값 `0x7b0`(1968줄)이었다. 55 MHz ÷ (1852 × 1968) ≈ 15 fps라서 관측과 맞는다.
+- mainline `ov5647.c`는 VTS를 모드 표가 아니라 vblank 컨트롤로 쓴다. 그런데 모드 표만 옮긴 Pablo 드라이버에는 그 부분이 없었다. 고친 내용: `sensor_ov5647_cis_mode_change()`가 모드 표 다음에 `ov5647_modes[mode].vts`를 0x380e/f에 쓴다(VGA는 `0x1f8`).
+- 그런데 VTS만 고치면 오히려 **4~5 fps**가 된다. 커널 명령줄의 `loglevel=8 ignore_loglevel` 때문에 카메라 드라이버의 프레임마다 나오는 메시지(`[bypass] FS`, `There's no Shot` 등)가 인터럽트 안에서 115200 baud UART로 나간다. 그러면 CSIS가 인터럽트를 놓친다(`interrupt lost`, `start/end overlapped`). 이렇게 망가진 뒤에는 같은 부팅에서 다음 스트림이 프레임 0장이 된다.
+- 그래서 `ov5647-cap.py`가 실행되는 동안만 `/sys/module/printk/parameters/ignore_loglevel`을 `N`으로, 콘솔 loglevel을 1로 바꾸고, 끝나면(`atexit`) 원래대로 돌려놓는다. 메시지는 dmesg에는 그대로 남는다.
+- 결과(8코어, `ov5647-cap.py --live -n 600 -b 8`을 연속 두 번): **63.1 fps, 55.9 fps.** 두 번째 실행도 정상이다. 같은 조건에서 VTS를 고치기 전은 콘솔이 조용해도 16.0 fps였다(그때는 16과 11.4가 번갈아 나오던 흔들림도 없어졌다).
+- 보드에는 새 `is-cis-ov5647.ko`(strip 후 md5 `968bfa3d...`)를 `/lib/modules/$(uname -r)/`에 넣었다. 원래 모듈은 `/root/is-cis-ov5647.ko.orig`에 있다.
+- 덤: 이번에는 `systemctl reboot`가 fastboot에 들어가지 않고 바로 다시 부팅한 적도 있었다(두 번 중 한 번). 리셋 원인은 아직 모른다.
 
 ### 11.11 장시간 안정성 (통과)
 
