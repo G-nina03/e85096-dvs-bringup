@@ -61,6 +61,8 @@ echo "modules: $(ls $MODDIR/*.ko | wc -l) copied, $(wc -l < $MODDIR/modules.load
 # 3. DTB: SoC dtb + board overlay merged here, so LK sees one complete tree
 DTS=/o/arch/arm64/boot/dts/exynos
 fdtoverlay -i $DTS/s5e3830.dtb -o /out/merged.dtb $DTS/board/erd/s5e3830-erd3830.dtbo
+# CPU ids as the board's (Android 10 era) BL31 reads them for PSCI CPU_ON: cluster<<8 | core
+for c in 0 1 2 3 4 5 6 7; do fdtput -t x /out/merged.dtb /cpus/cpu@000$c reg 0 $(printf %x $(( (c / 4) << 8 | c % 4 ))); done
 # Kernel messages go out through earlycon only (keep_bootcon keeps it after boot); there is no
 # tty console (console=ram, as in the BSP), because opening ttySAC0 from user space hung the
 # board (docs 7.15). The login is the USB ACM gadget instead.
@@ -71,7 +73,7 @@ fdtoverlay -i $DTS/s5e3830.dtb -o /out/merged.dtb $DTS/board/erd/s5e3830-erd3830
 # HDMI text console: 16x32 font (2x the 8x16 default) and white text (VT palette entry 7, the
 # default foreground, from light grey 170,170,170 to 255,255,255)
 VTPAL="vt.default_red=0,170,0,170,0,170,0,255,85,255,85,255,85,255,85,255 vt.default_grn=0,0,170,85,0,0,170,255,85,85,255,255,85,85,255,255 vt.default_blu=0,0,0,0,170,170,170,255,85,85,85,85,255,255,255,255"
-CMDLINE="console=ram keep_bootcon earlycon=exynos4210,mmio32,0x13820000 cpuidle.off=1 panic=0 maxcpus=1 fbcon=font:TER16x32 $VTPAL clocksource=arch_sys_counter clk_ignore_unused printk.devkmsg=on loglevel=8 ignore_loglevel firmware_class.path=/lib/firmware $ROOTARG"
+CMDLINE="console=ram keep_bootcon earlycon=exynos4210,mmio32,0x13820000 cpuidle.off=1 panic=0 fbcon=font:TER16x32 $VTPAL clocksource=arch_sys_counter clk_ignore_unused printk.devkmsg=on loglevel=8 ignore_loglevel firmware_class.path=/lib/firmware $ROOTARG"
 # The stock bootargs also start the watchdog at boot (s3c2410_wdt.tmr_atboot=1); without
 # Android's watchdogd nobody pings it, so it is left out here.
 fdtput -t s /out/merged.dtb /chosen bootargs "$CMDLINE"

@@ -1115,8 +1115,8 @@ lockup 당시 CPU1의 hrtimer 인터럽트 수가 0이었다. MCT 로컬 타이�
 
 ### 11.4 남은 일
 
-1. **CPU2~7 하나씩 켜기** — 11.6~11.7절. 꺼진 코어에 전원이 들어가지 않는다. 다음은 `maxcpus=1`을 빼고 부팅해 보기.
-2. 8개가 다 되면 `maxcpus=1`을 빼고 boot.img를 다시 만든다.
+1. ~~CPU2~7 켜기~~ — **해결(11.8절). 8코어 모두 동작.**
+2. ~~`maxcpus=1` 빼기~~ — 11.8절에서 함께 반영.
 3. 그다음 카메라 실시간 영상(9.8)의 fps를 다시 잰다.
 
 ### 11.5 보드를 USB로 연결하면 맥의 인터넷이 끊기는 문제
@@ -1172,3 +1172,45 @@ insmod cpu-pmu-enable.ko          # mask=0xfc (CPU2-7) 기본값
 1. Android 10(같은 부트로더)에서는 8코어가 켜진다. Android에서 hotplug 전에 무엇이 다른지 확인한다. 예: `exynos_mct` 로드, ACPM/APM 펌웨어 준비 순서, `cpuidle.off=1` 여부.
 2. EL3(BL31)의 `CPU_ON`이 APM(flexpmu)에 전원 요청을 보내는 방식(ACPM IPC 채널)이 Linux 쪽 초기화를 기다리는지 확인한다.
 3. 우회: `maxcpus=1`을 빼고 부팅 때 커널이 8개를 한꺼번에 켜게 한다. 부팅 시점에는 부트로더가 준비한 상태라 될 가능성이 있다. MCT를 이미 뺐으므로 CPU1 lockup 원인은 없다.
+
+### 11.8 해결: DT의 CPU `reg`(MPIDR)를 이 보드 BL31 방식으로 (8코어 동작)
+
+`maxcpus=1`만 빼고 부팅해도 결과는 같았다. 그때 로그에서 원인이 보였다.
+
+```text
+CPU1: Booted secondary processor 0x0000010000      ← DT의 CPU1 reg는 0x100인데 클러스터1 코어0이 깨어남
+CPU2..7: failed to come online
+```
+
+| | CPU0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| vendor 5.10 DT (`s5e3830.dtb`) | 0x0 | 0x100 | 0x200 | 0x300 | 0x10000 | 0x10100 | 0x10200 | 0x10300 |
+| Android 10 boot.img DT | 0x0 | 0x1 | 0x2 | 0x3 | 0x100 | 0x101 | 0x102 | 0x103 |
+
+이 보드의 BL31(Android 10 시절)은 PSCI `CPU_ON`의 대상을 `클러스터<<8 | 코어`로 해석한다. 그래서 5.10 DT 값으로는 다음과 같이 된다.
+- `0x100` → 클러스터1 코어0이 깨어나 논리 CPU1로 동작한다. 그래서 CPU1이 처음 한 번은 켜졌다.
+- `0x200`, `0x300` → 없는 클러스터라 아무것도 켜지지 않는다(`unknown state 0x0`).
+- `0x10000…` → 해석되지 않는다.
+
+11.3~11.7절의 증상이 모두 이것으로 설명된다. CPU4의 PMU 상태만 1이었던 것도 같은 이유다.
+
+수정(`tools/linux510/build-bootimg.sh`):
+- merged.dtb의 `/cpus/cpu@000N/reg`를 Android 10 값으로 바꾼다(`fdtput`).
+- 커맨드라인에서 `maxcpus=1`을 뺀다.
+
+결과(부팅 직후):
+
+```text
+CPU1: Booted secondary processor 0x0000000100
+CPU2: Booted secondary processor 0x0000000200
+...
+CPU7: Booted secondary processor 0x0000010300
+nproc → 8, online 0-7
+```
+
+- IPI0/IPI1 카운터가 8개 CPU 모두에서 증가한다.
+- 30초 동안 busy loop 8개를 돌리면 CPU 0~7에 고르게 나뉜다. lockup은 없었다.
+- Wi-Fi, nginx, USB 네트워크는 그대로 동작한다.
+- `modules/cpu-pmu-enable`은 진단용으로 남겨 두었다. 이제는 필요 없다.
+
+참고: 코어가 스스로 읽는 MPIDR(0x100, 0x10000 …)은 DT 값(0x1, 0x100 …)과 다르다. 그래도 IPI는 정상이다. 아직 확인하지 않은 것: CPU hotplug(끄고 다시 켜기), `cpuidle.off=1`을 빼도 되는지, 장시간 안정성.
