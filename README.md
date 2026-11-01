@@ -7,6 +7,7 @@ Status: Work in Progress / Experimental
 
 ## Start Here: Linux Migration and Student Forks (2026-10-26)
 
+- [작업 대화 기록 2026-11-01~02](docs/SESSION-LOG-20261101-02.md): 8코어·hotplug·카메라 60 fps·흰 글씨 콘솔까지의 대화, 결정, 다음 할 일(MySQL/Apache, YOLO nano).
 - [Exynos850 C2 / cpuidle 장애 참고 메모 (2026-11-02)](docs/E85096-C2-CPUIDLE-REFERENCE-20261102.md): 관찰 사실과 외부 Linaro 패치의 참고 근거만 기록한 문서. 작업 지시나 변경 요청 아님.
 - [OV5647 개발 후속 상태: Chip ID 확인, 벤더 5.10 + Debian 전략, Docker 및 Android 백업 진행](docs/E85096-OV5647-VENDOR510-DEBIAN-PLAN.md): MIPI/RAW10 미완료, boot0 읽기 중 재부팅 보고 및 백업 검증 조건.
 - [벤더 5.10 커널로 Linux 부팅하기 — 진행 매뉴얼](docs/E85096-LINUX510-BOOT.md): initramfs가 필요한 이유, boot.img v2 빌드(`tools/linux510`), RAM 부팅 시험 기록.
