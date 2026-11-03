@@ -7,12 +7,13 @@ After=systemd-modules-load.service
 [Service]
 Type=simple
 ExecStartPre=/sbin/modprobe dpu
+# colours: the fb reports MONO01 and DECON drops palette writes at boot (modules/e850-fbpal);
+# rebinding fbcon afterwards makes it pick colour mode. Do it before fb-hold.py opens fb0:
+# the unbind releases fb0 and decon_release turns DECON off even while another fd is open.
+ExecStartPre=/bin/sh -c '/sbin/modprobe -r e850-fbpal; /sbin/modprobe e850-fbpal; echo 0 > /sys/class/vtconsole/vtcon1/bind; echo 1 > /sys/class/vtconsole/vtcon1/bind'
 ExecStart=/usr/local/bin/fb-hold.py
 # the bridge needs the DSI clock running, which starts when fb-hold.py unblanks
 ExecStartPost=/bin/sh -c 'sleep 2; /usr/local/sbin/lt8912b-hdmi.sh'
-# colours: the fb reports MONO01 and DECON drops palette writes at boot (modules/e850-fbpal);
-# rebinding fbcon afterwards makes it pick colour mode
-ExecStartPost=/bin/sh -c '/sbin/modprobe -r e850-fbpal; /sbin/modprobe e850-fbpal; echo 0 > /sys/class/vtconsole/vtcon1/bind; echo 1 > /sys/class/vtconsole/vtcon1/bind'
 Restart=no
 
 [Install]

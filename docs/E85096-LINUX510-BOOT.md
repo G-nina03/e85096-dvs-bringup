@@ -1331,3 +1331,47 @@ docker run --rm -v ~/e850-a13-build:/work -v e850-kernel:/work/kernel -v e850-ou
 `e850-fbpal.ko`는 32bpp RGB면 `fix.visual = TRUECOLOR`로 고치고, `default_*`를 VGA 순서로 바꿔 fb0의 pseudo-palette에 직접 쓴다. `e850-hdmi.service`가 LT8912B 설정 뒤 이 모듈을 올리고 fbcon을 다시 붙인다(`vtcon1/bind` 0 → 1).
 
 결과(재부팅 후): 검정 배경(0x000000), 흰 글씨(0xffffff). `\033[31m/32m/34m`이 각각 0xaa0000, 0xaa00, 0xaa로 나와 색 순서도 맞다. 화면을 눈으로 보는 확인은 사용자에게 부탁한다.
+
+**정정(11.15):** 위의 "결과"는 fb0 메모리만 잰 값이다. 그때 HDMI 출력은 꺼져 있었다. 사용자는 이 설정으로 흰 글씨를 본 적이 없다.
+
+### 11.15 색을 바꾼 뒤 HDMI가 꺼져 있던 문제: `decon_release()` (2026-11-02 07시)
+
+**증상.** 11.14 이후 HDMI에 아무것도 나오지 않았다. 서비스는 active였다. fb0 메모리에는 흰 글자가 있었다(`fbhist.py`). LT8912B 칩 ID도 정상이었다.
+
+**원인(UART 로그로 확인).**
+
+```
+e850-fbpal: fb0 palette loaded
+sh: decon_release → decon_disable → dsim_disable → panel power(0)   ← echo 0 > vtcon1/bind
+Console: switching to colour frame buffer device 240x67             ← echo 1 > vtcon1/bind
+decon_pan_display: decon0 state(5), UNBLANK missed
+```
+
+- vendor `decon_release()`는 open 수를 세지 않는다. **fb0가 닫힐 때마다** DECON, DSIM, 패널 전원을 끈다. fbcon unbind도 여기에 들어간다.
+  - 그래서 `fb-hold.py`가 fd를 쥐고 있어도 rebind 순간 출력이 꺼졌다.
+  - `fbhist.py`나 `ov5647-cap.py --live`처럼 fb0를 열었다 닫는 프로그램도 화면을 끈다.
+  - 그동안 "마지막 fd를 닫으면 꺼진다"고 적었는데, 이 설명은 틀렸다.
+- DECON이 꺼져 있을 때 fbcon이 한 pan은 버려진다(`UNBLANK missed`). DECON을 다시 켜도 누군가 pan을 하기 전에는 fb0가 화면에 나가지 않는다.
+  - 측정: unblank만 했을 때 사용자 화면은 검정이었다.
+  - 다른 프로세스에서 `FBIOPAN_DISPLAY`를 하자 흰 글자가 잠깐 보였다. 그 프로세스가 fd를 닫는 순간 다시 꺼졌다.
+
+**고친 것.**
+
+| 파일 | 변경 |
+|---|---|
+| `modules/e850-hdmi/apply.sh` | `decon_core.c`에 `decon_open()`(`.fb_open`)을 추가하고 open 수를 센다(`atomic_t decon_fb_users`). `decon_release()`는 마지막 사용자일 때만 끈다. fbcon도 `fb_open`/`fb_release`를 짝으로 부른다 |
+| `tools/linux510/e850-hdmi.service` | fbpal 적재와 fbcon rebind를 `ExecStartPost`에서 `ExecStartPre`로 옮겼다(`fb-hold.py`가 fb0를 열기 전) |
+| `tools/linux510/fb-hold.py` | unblank 직후 `FBIOPAN_DISPLAY`를 한다 |
+
+`dpu.ko`는 initramfs 1단계 모듈이 아니다(`autoload.deny`). 서비스가 rootfs에서 올린다. 그래서 모듈만 다시 빌드했다(`kb34.log`). boot.img는 그대로다.
+
+**결과(재부팅 후).**
+- 부팅 때 fbcon unbind에서 DECON이 한 번 꺼진다. 그때 사용자가 fbcon 하나뿐이라 정상이다. 그 뒤 `fb-hold.py`가 다시 켠다.
+- `fbhist.py`를 두 번 실행했다. 로그에는 `decon_release +`만 있고 `decon_disable`은 없다.
+- **사용자가 HDMI 화면에서 흰 글씨를 눈으로 확인했다.**
+
+**확인하지 않은 것.**
+- `ov5647-cap.py --live`를 실행했다 끝낸 뒤의 화면
+- HDMI 케이블을 다시 꽂았을 때
+- DECON hibernation 뒤의 색
+- LT8912B HPD(`0xc1` bit7): 화면이 나올 때도 `not connected`로 읽혔다. 이 레지스터 판정은 믿을 수 없다.

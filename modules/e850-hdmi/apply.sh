@@ -37,6 +37,14 @@ sed -i '/^static int decon_fb_alloc_memory(/,/^#if defined(CONFIG_FB_TEST)/ {
     /^\tfbi->screen_base = NULL;$/d
 }' $F
 sed -n '/^static int decon_fb_alloc_memory(/,/^#if defined(CONFIG_FB_TEST)/p' $F | grep -n 'screen_base\|vunmap'
+# decon_release() runs on every close of fb0 (and on fbcon unbind) and turns DECON/DSIM off
+# each time, even while fb-hold.py or fbcon still use it: count the opens, disable on the last
+grep -q 'decon_fb_users' $F || {
+    sed -i 's|^int decon_release(struct fb_info \*info, int user)$|/* fb_release runs on every close: count opens, disable DECON only on the last one */\nstatic atomic_t decon_fb_users = ATOMIC_INIT(0);\n\nstatic int decon_open(struct fb_info *info, int user)\n{\n\tatomic_inc(\&decon_fb_users);\n\treturn 0;\n}\n\n&|' $F
+    sed -i '/^int decon_release(struct fb_info \*info, int user)$/,/^}$/ s|^\tdecon_info("%s + : %d\\n", __func__, decon->id);$|&\n\tif (atomic_dec_return(\&decon_fb_users) > 0)\n\t\treturn 0;|' $F
+    sed -i 's|^\t\.fb_release\t= decon_release,|\t.fb_open\t= decon_open,\n&|' $F
+}
+grep -n 'decon_fb_users\|fb_open' $F
 # FB_CFB_* are select-only symbols (olddefconfig drops them when set by hand): select them here
 KC=$K/drivers/video/fbdev/exynos/dpu30/Kconfig
 grep -q 'select FB_CFB_IMAGEBLIT' $KC ||

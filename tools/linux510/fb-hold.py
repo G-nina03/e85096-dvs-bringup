@@ -37,7 +37,8 @@ if '--bars' in sys.argv:
     for y0 in (0, yres):                          # both buffers
         m[y0 * stride:(y0 + yres) * stride] = img.tobytes()
     struct.pack_into('II', var, 16, 0, 0)         # xoffset, yoffset
-    fcntl.ioctl(fd, FBIOPAN_DISPLAY, var)
+# fbcon's pan while DECON was off was dropped ("UNBLANK missed"): pan now so DECON scans fb0 out
+fcntl.ioctl(fd, FBIOPAN_DISPLAY, var)
 
 print('fb0 %dx%d unblanked%s; holding it open' % (xres, yres, ', bars drawn' if '--bars' in sys.argv else ''),
       flush=True)

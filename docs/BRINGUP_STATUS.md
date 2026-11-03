@@ -11,7 +11,8 @@
 | CPU hotplug | `e850-cpuhp` 모듈로 해결. 30회 + 무작위 300회 시험에서 실패 0 | 11.13 |
 | C2 cpuidle | **보류.** 코어가 C2에서 깨어나지 않는다. 펌웨어 문제로 본다. `cpuidle.off=1` 유지 | 11.12 |
 | 카메라 OV5647 | 55~63 fps(VTS 수정, 캡처 중 printk 끔) | 11.10 |
-| HDMI 콘솔 색 | 흰 글씨. 재부팅 뒤에도 유지된다. 우회 모듈로 고쳤고 근본 수정은 아직이다(아래 2절) | 11.14 |
+| HDMI 콘솔 색 | 흰 글씨. 재부팅 후 사용자가 화면에서 확인했다. 색은 우회 모듈로 고쳤고 visual/팔레트 근본 수정은 아직이다(아래 2절) | 11.14, 11.15 |
+| HDMI 출력 꺼짐 | 해결. `decon_release()`가 fb0를 닫을 때마다 DECON을 끄던 것을 open 수 세기로 고쳤다(dpu.ko 재빌드) | 11.15 |
 | 네트워크 | Wi-Fi 192.168.0.236(ssh), USB NCM 192.168.7.1 | 11.5 |
 | 서비스 | nginx(80), ssh, e850-hdmi, e850-wifi, systemd-timesyncd, 워치독 데몬 | |
 | 사용자 계획 | MySQL + Apache로 출입 기록, YOLO nano 영상 처리 | |
@@ -27,19 +28,25 @@
   - fbcon이 붙는 시점에 DECON은 아직 켜지지 않았으므로, fbcon은 흑백(MONO) 모드로 붙는다.
 - **팔레트:** `decon_setcolreg()`는 DECON이 OFF나 HIBER일 때 쓰기를 버리고 성공을 돌려준다. 그래서 `vt.default_*`나 `ESC ] P`로 팔레트를 바꿔도 반영되지 않는다.
 - **색 순서:** fbcon의 pseudo-palette 인덱스는 VGA 순서(1=파랑, 4=빨강)이고, `default_red/grn/blu` 배열은 ANSI 순서(1=빨강, 4=파랑)다. 변환하지 않고 넣으면 빨강과 파랑이 바뀐다.
+- **`decon_release()`(11.15):** vendor 드라이버는 fb0가 닫힐 때마다 DECON, DSIM, 패널을 껐다. fbcon unbind도 포함이다. DECON이 꺼져 있을 때 한 pan은 버려진다(`UNBLANK missed`). 그래서 11.14 이후 HDMI 출력이 꺼져 있었다.
 - **현재 해결책:**
-  1. `e850-hdmi.service`의 `ExecStartPost`에서 `e850-fbpal`을 다시 올린다.
+  1. `e850-hdmi.service`의 `ExecStartPre`에서 `e850-fbpal`을 다시 올린다. `fb-hold.py`가 fb0를 열기 전이다.
   2. 이 모듈이 visual을 TRUECOLOR로 바꾸고, pseudo-palette 16색을 VGA→ANSI 순서로 채운다.
   3. 서비스가 fbcon을 vtcon1에서 unbind했다가 bind해서 색 모드로 다시 붙인다.
-- **측정(`tools/board/fbhist.py`, 화면 픽셀 히스토그램):**
+  4. `fb-hold.py`가 unblank하고 pan을 한 뒤 fd를 계속 쥐고 있다.
+  5. 패치한 `dpu.ko`(`modules/e850-hdmi/apply.sh`)는 마지막 사용자가 닫을 때만 DECON을 끈다.
+- **측정(`tools/board/fbhist.py`, fb0 메모리의 픽셀 히스토그램. HDMI 출력이 아니다):**
   - 배경 0x000000, 글자 0xffffff
   - `\033[31m` → 0xaa0000, `\033[32m` → 0x00aa00, `\033[34m` → 0x0000aa
   - 재부팅한 뒤에도 같다.
+- **HDMI 화면:** 2026-11-02 07시, 재부팅 뒤 사용자가 흰 글씨를 눈으로 확인했다. 그 전(11.14)에는 출력이 꺼져 있었다.
+- **fb0 열고 닫기:** `fbhist.py`를 두 번 실행해도 `decon_disable`이 찍히지 않는다.
 
 ### 2.2 가설 (아직 확인하지 않음)
 
 - DECON이 HIBER(화면 절전)에 들어갔다 나오거나 `decon_set_par()`가 정상 경로로 불리면, 드라이버가 visual이나 팔레트를 다시 덮어써서 색이 다시 틀어질 수 있다.
-- HDMI 케이블을 다시 꽂거나, `ov5647-cap.py --live`가 fb를 직접 쓰다가 끝난 뒤에도 색이 유지되는지는 모른다.
+- HDMI 케이블을 다시 꽂거나, `ov5647-cap.py --live`가 fb를 직접 쓰다가 끝난 뒤에도 화면과 색이 유지되는지는 모른다.
+- LT8912B HPD 레지스터(`0xc1` bit7)는 화면이 나올 때도 `not connected`로 읽혔다. 판정에 쓰지 않는다.
 - 근본 수정은 dpu 드라이버 두 곳을 바꾸면 될 것으로 본다.
   1. probe에서 `fix.visual = TRUECOLOR`를 설정한다.
   2. `decon_setcolreg()`가 OFF나 HIBER일 때도 pseudo-palette에는 값을 저장한다.
@@ -53,6 +60,9 @@
 | `ESC ] R` / `ESC ] P`로 팔레트 재설정 | 변화 없음 | `decon_setcolreg()`가 OFF/HIBER에서 쓰기를 버림 |
 | `e850-fbpal` 첫 버전(visual은 두고 팔레트만 채움) | 적재 실패 `-ENODEV` | visual 검사에 걸림. TRUECOLOR를 강제하는 것으로 고침 |
 | `e850-fbpal` 둘째 버전(ANSI 순서 그대로 채움) | 빨강과 파랑이 바뀜 | VGA/ANSI 인덱스 차이. `vga_to_ansi[]` 표로 고침 |
+| fbcon rebind를 `fb-hold.py` 뒤에 실행(11.14 서비스) | HDMI 출력 꺼짐. fb0 메모리만 정상이라 놓침 | rebind의 `decon_release()`가 DECON을 끔 |
+| rebind 뒤 `fb0/blank`로 unblank만 함 | 검은 화면 | pan이 없어 fb0가 화면에 나가지 않음 |
+| 다른 프로세스에서 pan | 흰 글씨가 잠깐 보였다가 사라짐 | 그 프로세스가 fd를 닫을 때 다시 꺼짐 |
 
 ### 2.4 보드에 실제로 바꾼 것 (이번 세션)
 
@@ -62,7 +72,10 @@
 | `/lib/modules/$(uname -r)/e850-cpuhp.ko` | 추가. `/etc/modules-load.d/e850-cpuhp.conf`로 자동 적재 |
 | `/lib/modules/$(uname -r)/e850-fbpal.ko` | 추가. `e850-hdmi.service`가 올림 |
 | `/lib/modules/$(uname -r)/is-cis-ov5647.ko` | VTS 수정판으로 교체. 원본은 `/root/is-cis-ov5647.ko.orig` |
-| `/etc/systemd/system/e850-hdmi.service` | `ExecStartPost`(fbpal 재적재 + fbcon rebind) 추가. 저장소와 md5 같음 |
+| `/etc/systemd/system/e850-hdmi.service` | fbpal 재적재와 fbcon rebind를 `ExecStartPre`로 옮김(11.15). 저장소와 같은 파일. 이전 판은 `/root/e850-hdmi.service.bak` |
+| `/usr/local/bin/fb-hold.py` | unblank 뒤 pan 추가(11.15). 이전 판은 `/root/fb-hold.py.bak` |
+| `/lib/modules/$(uname -r)/dpu.ko` | open 수 세기 패치판(md5 `5f4f70f0…`). 원본은 `/root/dpu.ko.orig` |
+| `/home/philip/.ssh/authorized_keys` | 사용자가 Mac 키를 등록(`ssh-copy-id`). `ssh philip@192.168.0.236` 키 접속 가능. sudo는 비밀번호 필요 |
 | `/usr/local/bin/ov5647-cap.py` | 캡처 중 printk 끄기, u32 LUT. 저장소와 md5 같음 |
 | `/root/` | 시험용 스크립트 `ovreg.py`, `hp.sh`, `fbhist.py`, `stress1h.sh`, `.ko` 사본 |
 | 계정 / Wi-Fi | `philip` 계정. Wi-Fi는 PSK 해시만 보드에 있음(저장소에는 없음) |
@@ -70,6 +83,7 @@
 ## 3. 다음에 할 실험 3개
 
 1. **HDMI 색 유지 시험 (위험 낮음, 재부팅 없음)**
+   - `restart e850-hdmi`와 fb0 열고 닫기는 11.15에서 확인했다. 나머지가 남았다.
    - 할 일: `fbhist.py`로 색을 측정하면서 다음 상황을 차례로 만든다.
      - `systemctl restart e850-hdmi`
      - HDMI 케이블 뽑았다 꽂기
@@ -78,8 +92,9 @@
    - 판정: 매번 배경 0x000000, 글자 0xffffff인지 본다.
    - 2.2의 가설 1·2를 확인하는 실험이다.
 2. **dpu 드라이버 근본 수정 (모듈 재빌드, 적용에 재부팅 필요 → 허락받고)**
+   - `decon_release()` open 수 세기는 11.15에서 했다. visual과 setcolreg 두 곳이 남았다.
    - 할 일: 2.2의 근본 수정 두 곳을 dpu 드라이버에 넣고 모듈을 다시 만든다. 그다음 `e850-fbpal`과 rebind 없이 부팅해 색을 측정한다.
-   - dpu가 initramfs 1단계 모듈이면 boot.img도 다시 만들어야 한다.
+   - dpu는 initramfs 1단계 모듈이 아니다(`autoload.deny`). rootfs의 dpu.ko만 바꾸고 재부팅하면 된다.
    - 실패하면 `boot-nokvm` 이미지로 되돌린다.
 3. **YOLO nano CPU 추론 벤치마크 (보드 변경은 패키지 설치뿐)**
    - 할 일: ncnn 또는 ONNX Runtime으로 YOLOv8n/YOLO11n(모델은 사용자 확인 필요)을 8코어에서 돌린다. 320과 640 입력에서 fps와 온도를 잰다.
