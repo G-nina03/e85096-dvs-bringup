@@ -1567,3 +1567,47 @@ Kernel panic - not syncing: CSIS error!! CSIS_ERR_OVERFLOW_VC     (ksoftirqd/0)
 - 약 30만 번/s는 프레임 단위(2000 FPS)가 아니라 줄 단위(2000 FPS × 127줄 ≈ 25만)나 오류 인터럽트가 반복되는 규모다(가설).
 - 보드는 살아 있었다. 앞의 두 lockup이 모두 CPU0에서 났으므로, 이 CSIS 인터럽트 폭주가 원인 후보다(확인 안 함).
 - 결과는 이전과 같다. F48에서 오류 프레임, 사용자 공간 프레임 0개.
+
+### 11.22 CSIS IRQ 폭주의 원인과 수정, DVS 이벤트 데이터가 메모리에 들어옴 (2026-11-06)
+
+**자동 복구 준비(사용자 외출, 전원을 다시 넣지 않아도 되게).** 보드에 `/etc/sysctl.d/90-e850-autoreboot.conf`를 추가했다.
+- 설정: `kernel.softlockup_panic=1`, `kernel.panic=5`. soft lockup → 패닉 → 5초 뒤 리셋.
+- sysrq `c`로 시험했다. 패닉 후 자동 재부팅됐다. 그 부팅의 34.7 s에 eMMC(cqhci) `dma_unmap_sg`→`dcache_inval_poc` Oops가 나서 다시 패닉했고, LK fastboot(`Abnormal RST_STAT`)로 들어갔다. `fastboot reboot`로 정상 부팅했다.
+  - 같은 Oops는 uart.log에 전에도 3번 있었다(이번 이전 2번). 원인은 조사하지 않았다.
+- 어느 쪽이든 Mac에서 `fastboot reboot`로 복구할 수 있다.
+
+**IRQ 원인 측정: `modules/csis-irqstat`.** kretprobe로 `csi_hw_g_irq_src()`가 해석한 irq_src만 센다. CSIS 레지스터는 건드리지 않는다.
+- 3초 캡처 결과: ISR 238,427번 중 오류가 있는 것이 238,427번이다.
+  - `err_id` bit 16(**VRESOL_MISMATCH**): 238,245번
+  - bit 4(OVERFLOW): 8,266번
+  - FS 39, FE 38
+- 소스 원인: `is-hw-csi-v1_2.c`의 `csi_hw_g_irq_src()`가 VC별 오류 상태(`ERR_LOST_FS/FE` 0x6xx, `ERR_VRESOL` 0x624, `ERR_HRESOL`)를 읽기만 하고 되쓰지 않는다. 이 상태가 남아 있어 link IRQ가 계속 걸린 것으로 본다. v5_x도 같다. 보통 센서에서는 VRESOL 오류가 나지 않아 드러나지 않았다.
+
+**수정: `modules/s5krc1s-pablo/patches/csis-v1_2-err-clear.patch`.** `apply.sh`가 적용한다. fimc-is.ko를 다시 빌드했다(d092d0de…). 보드의 이전 모듈은 `/root/fimc-is.ko.nopanic`에 있다.
+1. 읽은 뒤 위 네 레지스터에 읽은 값을 되쓴다(clear).
+2. VRESOL mismatch를 오류로 치지 않는다. DVS 프레임 길이는 이벤트에 따라 달라진다.
+
+**결과 1 (패치만).**
+- IRQ가 **28만 → 267번**으로 줄었다.
+- VC0 버퍼 3개가 사용자 공간에 왔다. 모두 ERROR(flags 0x4040)였다.
+- 모든 IRQ에 OVERFLOW(bit 4)가 있었다. dmesg에는 프레임마다 `OVERFLOW_VC`, `DMAFIFO_FULL`, `DMA_ABORT_DONE`, `start/end overlapped`가 나온다. 프레임 간격은 10~60 ms다.
+- devfreq는 CAM 650000(최저), INT 100 MHz(최저), MIF 676 MHz였다. 로그에는 `dvfs table is NOT selected`가 있다.
+
+**결과 2 (devfreq 최대: `cat max_freq > min_freq`, mif/int/cam).** 재부팅하면 원래대로 돌아간다.
+- **OVERFLOW가 사라졌다.** 이제 오류는 bit 1(**CRC**) 277/277번이다.
+- **frame 0은 ERROR 없이 왔다(flags 0x4000).** frame 1과 2는 ERROR였다. 모두 `bytesused 0`이다(bypass 경로가 채우지 않음).
+- 프레임 파일은 Mac의 `~/e850-logs/dvs-frames-20261106/`에 있다.
+
+**데이터 확인: `tools/host/dvsdecode.py`.** 32비트 big-endian으로 읽고 매뉴얼 Figure 49/50 형식으로 해석한다.
+- frame 0: 첫 줄만 데이터다. 순서는 ref_ts(`08000003`) → sub_ts(`088002ad`) → COLUMN(`04200000`, 첫 열 플래그) → EVENT GROUP이다. 알 수 없는 워드는 0개, 이벤트는 21,181개, 열 89개다.
+- frame 1/2: 각각 127줄과 39줄이 차 있다. 3~5%는 표에 없는 워드다.
+  - 대부분 `0000532f`, `00005330`처럼 값이 늘어나는 type 000000 워드와 type 000101 워드다. IMU처럼 디코더가 아직 모르는 패킷으로 보인다(가설).
+  - frame_end의 프레임 번호가 섞여 있는 곳이 있다. CRC 오류로 데이터가 깨졌는지는 아직 모른다.
+- 열 주소 최대값이 1783이다. 매뉴얼(0~959)보다 크다. 원인은 확인하지 않았다.
+- **센서의 DVS 이벤트가 MIPI → CSIS → DMA → 사용자 공간까지 처음으로 왔다.**
+
+**남은 것.**
+- 프레임마다 CRC 오류가 있다(레인 속도/settle, 2-lane). 이 때문에 ERROR 플래그가 붙는다.
+- devfreq를 매번 손으로 올려야 한다.
+- 디코더가 type 000000(값 있음)과 000101을 모른다.
+- 1000 FPS(`to_scnt1`)의 효과를 아직 측정하지 못했다.

@@ -1,0 +1,33 @@
+--- a/drivers/media/platform/exynos/camera/sensor/csi2/is-hw-csi-v1_2.c	2026-11-05 22:54:23.577997002 +0000
++++ b/drivers/media/platform/exynos/camera/sensor/csi2/is-hw-csi-v1_2.c	2026-11-05 22:54:23.670997002 +0000
+@@ -423,7 +423,7 @@
+ 		err_id[i] |= ((crc_err       & (1 << i)) ? (1 << CSIS_ERR_CRC) : 0);
+ 		err_id[i] |= ((err_id_err    & (1 << i)) ? (1 << CSIS_ERR_ID) : 0);
+ 
+-		err_id[i] |= ((vresol_err    & (1 << i)) ? (1 << CSIS_ERR_VRESOL_MISMATCH) : 0);
++		/* e850: not an error, a DVS (S5KRC1S) frame length follows its events, not VRESOL */
+ 		err_id[i] |= ((hresol_err    & (1 << i)) ? (1 << CSIS_ERR_HRESOL_MISMATCH) : 0);
+ 		err_id[i] |= ((inval_code_hs & (1 << i)) ? (1 << CSIS_ERR_INVALID_CODE_HS) : 0);
+ 		err_id[i] |= ((sot_sync_hs & (1 << i)) ? (1 << CSIS_ERR_SOT_SYNC_HS) : 0);
+@@ -474,6 +474,21 @@
+ 	src->line_end = is_hw_get_field_value(line_val, &csi_fields[CSIS_F_LINE_END_CH]);
+ 	src->err_flag = csi_hw_g_value_of_err(base_reg, otf_src0, otf_src1, (u32 *)src->err_id);
+ 
++	/*
++	 * e850: the per-VC error status (LOST_FS/FE, V/HRESOL) stays set unless written back, and
++	 * keeps the link IRQ asserted: DVS frames that miss VRESOL gave ~240k IRQs/s (11.22).
++	 */
++	if (clear) {
++		is_hw_set_reg(base_reg, &csi_regs[CSIS_R_ERR_LOST_FS],
++			is_hw_get_reg(base_reg, &csi_regs[CSIS_R_ERR_LOST_FS]));
++		is_hw_set_reg(base_reg, &csi_regs[CSIS_R_ERR_LOST_FE],
++			is_hw_get_reg(base_reg, &csi_regs[CSIS_R_ERR_LOST_FE]));
++		is_hw_set_reg(base_reg, &csi_regs[CSIS_R_ERR_VRESOL],
++			is_hw_get_reg(base_reg, &csi_regs[CSIS_R_ERR_VRESOL]));
++		is_hw_set_reg(base_reg, &csi_regs[CSIS_R_ERR_HRESOL],
++			is_hw_get_reg(base_reg, &csi_regs[CSIS_R_ERR_HRESOL]));
++	}
++
+ 	return 0;
+ }
+ 

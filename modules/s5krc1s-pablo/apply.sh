@@ -25,5 +25,10 @@ grep -q 's5e3830-e850-s5krc1s-camera.dtsi' "$K/$BOARD"
 CFG=drivers/media/platform/exynos/camera/ischain/is-v8_20_0/is-config.h
 sed -i 's|^#define OVERFLOW_PANIC_ENABLE_CSIS$|#undef OVERFLOW_PANIC_ENABLE_CSIS\t/* e850: log CSIS overflow, no panic */|' "$K/$CFG"
 grep -n 'OVERFLOW_PANIC_ENABLE_CSIS' "$K/$CFG"
+
+# CSIS v1.2: write back the per-VC error status (it kept the link IRQ asserted) and do not treat a
+# VRESOL mismatch as an error (a DVS frame length is not fixed). 11.22. Needs a fimc-is.ko rebuild.
+patch -d "$K" -p1 -N -r - < "$HERE/patches/csis-v1_2-err-clear.patch" ||
+    patch -d "$K" -p1 -R --dry-run < "$HERE/patches/csis-v1_2-err-clear.patch" >/dev/null
 grep -n 'camera/' "$K/$BOARD"
 echo "applied to $K"
