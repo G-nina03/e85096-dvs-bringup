@@ -1611,3 +1611,34 @@ Kernel panic - not syncing: CSIS error!! CSIS_ERR_OVERFLOW_VC     (ksoftirqd/0)
 - devfreq를 매번 손으로 올려야 한다.
 - 디코더가 type 000000(값 있음)과 000101을 모른다.
 - 1000 FPS(`to_scnt1`)의 효과를 아직 측정하지 못했다.
+
+### 11.23 CRC 오류 조사: 레인 속도/settle 파라미터, 패킷 구조 분석 (2026-11-06)
+
+**도구.**
+- `modules/s5krc1s-pablo/patches/csi-speed-param.patch`: fimc-is에 `e850_csi_speed`, `e850_csi_settle`(0이면 DT 값)을 추가했다. `/sys/module/fimc_is/parameters`에서 바꾸면 다음 stream on부터 적용된다. fimc-is.ko 7f47a2a8…다. 이 모듈을 올리느라 재부팅을 한 번 했다.
+- `tools/board/dvscap.sh [speed] [settle]`: devfreq 최대, 모듈 적재, 파라미터 설정, csis-irqstat, 3프레임 캡처를 한 번에 한다.
+
+**배경(PHY 드라이버).** `phy-exynos-mipi.c`는 speed가 1500 Mbps 이상이면 deskew(skew_cal_en)를 켜고 settle clock 선택을 바꾼다.
+
+**측정.** 센서는 항상 1.6 Gbps(setfile)로 보낸다. 바꾼 것은 수신 쪽 설정뿐이다.
+
+| speed / settle | 버퍼 ERROR 플래그 | CRC가 있는 ISR |
+|---|---|---|
+| 1600 / 8 (DT, deskew 켬) | 3개 중 2개 | 275/275, 137/137 |
+| 1499 / 7(자동), 8, 5, 10, 14 (deskew 끔) | 3개 중 1개 | 약 55% (206~262/375~447) |
+
+settle 값은 결과에 영향이 없었다.
+
+**패킷 구조 분석(`dvsdecode.py`와 즉석 스크립트, 프레임은 `~/e850-logs/dvs-frames-20261106/`).**
+- 매뉴얼 표에 없는 워드는 type 000000(0이 아님, 94%)과 000101(6%) **두 종류뿐**이다.
+- "MGROUP/SGROUP의 bit 31이 빠진다"는 가설은 **틀렸다**. 그렇다면 offset 7~31(실제 그룹의 약 35%)도 정의되지 않은 type으로 보여야 하는데 하나도 없다.
+- SGROUP 주소(7비트)가 89를 넘는 경우도 없다. 무작위 비트 오류로 보기 어렵다.
+- 정의되지 않은 워드의 비율은 캡처 안에서 프레임 0 → 2로 갈수록 커진다(0% → 2.6% → 5.8%). 1499에서는 더 높다(5% → 9% → 19%).
+  - CRC ISR 비율은 1499 쪽이 낮다. 두 지표의 방향이 반대다. 아직 설명하지 못했다.
+- 참고: RPi5 저장소(`DVS.Decoder.RP5.01`)의 production 경로는 compressed packet이 아니라 **RAW2**(2비트 픽셀 래스터, 960×720, 열당 180바이트)다. 이 type들의 해석은 거기에도 없다.
+- 데이터시트(REV0.01)에 따르면 compressed 형식의 최대 fixed scan rate는 1355 fps다. system PLL `24 MHz × 157 / 3 = 1256 MHz`, ÷10 = event clock 125.6 MHz로 맞는다. 따라서 내부 클록은 24 MHz다(계산에서 나온 결론).
+
+**판단.**
+- CRC 오류의 원인(신호 품질, 2-lane 1.6 Gbps, 센서 CRC 계산 방식)은 아직 모른다.
+- 정의되지 않은 패킷이 데이터 손상인지 문서에 없는 패킷인지도 확정하지 못했다.
+- DT 기본값(1600)은 그대로 두었다. 파라미터 기본값은 0이라 동작이 바뀌지 않는다.

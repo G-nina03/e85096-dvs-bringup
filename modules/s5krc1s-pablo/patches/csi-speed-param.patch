@@ -1,0 +1,64 @@
+--- a/drivers/media/platform/exynos/camera/is-device-csi_v4.c
++++ b/drivers/media/platform/exynos/camera/is-device-csi_v4.c
+@@ -2023,12 +2023,19 @@
+ 	return ret;
+ }
+ 
++/* e850: override the DT lane speed / settle at stream on, 0 = DT (S5KRC1S CRC errors, 11.22) */
++static uint e850_csi_speed;
++module_param(e850_csi_speed, uint, 0644);
++static uint e850_csi_settle;
++module_param(e850_csi_settle, uint, 0644);
++
+ static int csi_stream_on(struct v4l2_subdev *subdev,
+ 	struct is_device_csi *csi)
+ {
+ 	int ret = 0;
+ 	int vc;
+ 	u32 settle;
++	u32 speed;
+ 	u32 __iomem *base_reg;
+ 	u32 dma_ch;
+ 	struct is_device_sensor *device = v4l2_get_subdev_hostdata(subdev);
+@@ -2079,10 +2086,11 @@
+ 		goto err_csi_request_irq;
+ 	}
+ 
+-	settle = sensor_cfg->settle;
++	speed = e850_csi_speed ? e850_csi_speed : sensor_cfg->mipi_speed;
++	settle = e850_csi_settle ? e850_csi_settle : sensor_cfg->settle;
+ 	if (!settle) {
+-		if (sensor_cfg->mipi_speed)
+-			settle = is_hw_find_settle(sensor_cfg->mipi_speed, csi->use_cphy);
++		if (speed)
++			settle = is_hw_find_settle(speed, csi->use_cphy);
+ 		else
+ 			merr("[CSI%d] mipi_speed is invalid", csi, csi->ch);
+ 	}
+@@ -2098,7 +2106,7 @@
+ 		csi->image.window.width,
+ 		csi->image.window.height,
+ 		sensor_cfg->framerate,
+-		settle, sensor_cfg->mipi_speed, sensor_cfg->lanes + 1,
++		settle, speed, sensor_cfg->lanes + 1,
+ 		csi->potf, csi->otf_batch_num, csi->hw_fcount);
+ 
+ 	if (device->ischain)
+@@ -2111,7 +2119,7 @@
+ 	csi_hw_s_phy_default_value(csi->phy_reg, csi->ch);
+ 	csi_hw_phy_otp_config(csi->phy_reg, csi->ch);
+ 	csi_hw_s_settle(csi->phy_reg, settle);
+-	ret = csi_hw_s_phy_config(csi->phy_reg, sensor_cfg->lanes, sensor_cfg->mipi_speed, settle, csi->ch);
++	ret = csi_hw_s_phy_config(csi->phy_reg, sensor_cfg->lanes, speed, settle, csi->ch);
+ 	if (ret) {
+ 		merr("[CSI%d] csi_hw_s_phy_config is fail", csi, csi->ch);
+ 		goto err_config_phy;
+@@ -2122,7 +2130,7 @@
+ 	if (device->ex_scenario != IS_SCENARIO_SECURE) {
+ #endif
+ 	/* PHY be configured in PHY driver */
+-	ret = csi_hw_s_phy_set(csi->phy, sensor_cfg->lanes, sensor_cfg->mipi_speed, settle, csi->ch,
++	ret = csi_hw_s_phy_set(csi->phy, sensor_cfg->lanes, speed, settle, csi->ch,
+ 				csi->use_cphy);
+ 	if (ret) {
+ 		merr("[CSI%d] csi_hw_s_phy_set is fail", csi, csi->ch);

@@ -30,5 +30,9 @@ grep -n 'OVERFLOW_PANIC_ENABLE_CSIS' "$K/$CFG"
 # VRESOL mismatch as an error (a DVS frame length is not fixed). 11.22. Needs a fimc-is.ko rebuild.
 patch -d "$K" -p1 -N -r - < "$HERE/patches/csis-v1_2-err-clear.patch" ||
     patch -d "$K" -p1 -R --dry-run < "$HERE/patches/csis-v1_2-err-clear.patch" >/dev/null
+# fimc_is.e850_csi_speed / e850_csi_settle: override the DT lane speed and settle at stream on
+# (/sys/module/fimc_is/parameters, 0 = DT) for the CRC experiments without a new DTB. 11.22.
+patch -d "$K" -p1 -N -r - < "$HERE/patches/csi-speed-param.patch" ||
+    patch -d "$K" -p1 -R --dry-run < "$HERE/patches/csi-speed-param.patch" >/dev/null
 grep -n 'camera/' "$K/$BOARD"
 echo "applied to $K"
