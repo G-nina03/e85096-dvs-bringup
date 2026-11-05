@@ -7,7 +7,8 @@ Status: Work in Progress / Experimental
 
 ## E850–DVS 연결 및 포팅 강의 슬라이드
 
-- [E850 DVS 22핀→15핀 연결 및 드라이버 포팅 가이드 (16:9, 편집 가능한 HTML)](docs/E850_DVS_22to15_Connection_Porting_Guide_Editable.html) — CN4 핀맵, Raspberry Pi 4 비교, DVS FPC/케이블 사진, Internal Clock, Reset GPIO, Device Tree, I²C, CSI/CSIS bring-up 및 단계별 점검. 브라우저에서 보려면 파일을 내려받아 열어야 하며 GitHub의 파일 화면은 HTML을 직접 실행하지 않습니다. 핀 연결·전압·RESET은 실측 검증 후 전원을 인가하세요.
+- [웹에서 슬라이드 바로 보기 (20장, 16:9, 편집 가능)](https://philipdekim-ond01.github.io/obsidian-blog/dvs-ondevice-ai/e850-dvs-connection-porting.html) — GitHub Pages에서 HTML 슬라이드를 직접 실행합니다.
+- [HTML 원본 소스 (E850 저장소)](docs/E850_DVS_22to15_Connection_Porting_Guide_Editable.html) — CN4 핀맵, Raspberry Pi 4 비교, DVS FPC/케이블 실물 사진, Internal Clock, GPIO Reset, Device Tree, I²C, CSI/CSIS bring-up 및 검증 절차. GitHub 파일 화면은 HTML 소스만 보여주므로 위 `웹에서 슬라이드 바로 보기` 링크를 사용하세요. 전원·전압·RESET 배선은 실측 검증 후 연결해야 합니다.
 
 ## Start Here: Linux Migration and Student Forks (2026-10-26)
 
