@@ -45,6 +45,20 @@ grep -q 'decon_fb_users' $F || {
     sed -i 's|^\t\.fb_release\t= decon_release,|\t.fb_open\t= decon_open,\n&|' $F
 }
 grep -n 'decon_fb_users\|fb_open' $F
+# fbcon colours: the fb reported MONO01 until decon_set_par() ran (it returns early while DECON
+# is off, which it is when fbcon binds), so fbcon bound in mono; and decon_setcolreg() dropped
+# palette writes while DECON was off. The pseudo-palette is memory only: set TRUECOLOR at window
+# create and always store it (replaces modules/e850-fbpal + fbcon rebind). Drop its debug printk.
+grep -q 'fbinfo->fix.visual = FB_VISUAL_TRUECOLOR;' $F ||
+    sed -i 's|^\tfbinfo->pseudo_palette  = &win->pseudo_palette;$|&\n\tfbinfo->fix.visual = FB_VISUAL_TRUECOLOR;|' $F
+grep -n 'fbinfo->fix.visual = FB_VISUAL_TRUECOLOR;' $F
+F=$K/drivers/video/fbdev/exynos/dpu30/decon_dsi.c
+sed -i '/^int decon_setcolreg(unsigned regno,$/,/^EXPORT_SYMBOL(decon_setcolreg);$/ {
+    /^\tprintk("@@@@ %s\\n", __func__);$/d
+    /^\tif (IS_DECON_OFF_STATE(decon))$/ { N; N; /\n\t\treturn 0;\n$/d; }
+    /^\tstruct decon_device \*decon = win->decon;$/d
+}' $F
+sed -n '/^int decon_setcolreg(unsigned regno,$/,/^EXPORT_SYMBOL(decon_setcolreg);$/p' $F | grep -n '@@@@\|IS_DECON_OFF_STATE' || echo 'decon_setcolreg: always stores the pseudo-palette'
 # FB_CFB_* are select-only symbols (olddefconfig drops them when set by hand): select them here
 KC=$K/drivers/video/fbdev/exynos/dpu30/Kconfig
 grep -q 'select FB_CFB_IMAGEBLIT' $KC ||

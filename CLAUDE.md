@@ -22,7 +22,7 @@ WinLink E850-96(Samsung Exynos850 = s5e3830, Cortex-A55 8코어)에 vendor Linux
 | 명령줄 핵심 | `cpuidle.off=1`(C2에 들어가면 코어가 깨지 않음, 11.12), `panic=0`, `clocksource=arch_sys_counter`, `loglevel=8 ignore_loglevel`, `vt.default_*`(흰 글씨), `root=PARTLABEL=userdata` |
 | rootfs | Debian 12 arm64, `userdata`(mmcblk0p24) ext4. `tools/linux510/build-rootfs.sh` |
 | 지금 구워진 boot | `~/e850-logs/boot-nokvm/boot.img` = 저장소 빌드 + `kvm-arm.mode=none`(커널이 무시함). 1시간 부하 시험 통과 |
-| 자동 적재 모듈 | `e850-cpuhp`(hotplug, `/etc/modules-load.d`), `e850-fbpal`(HDMI 콘솔 색, `e850-hdmi.service`가 올림) |
+| 자동 적재 모듈 | `e850-cpuhp`(hotplug, `/etc/modules-load.d`), HDMI 콘솔 색은 dpu.ko 패치(`modules/e850-hdmi/apply.sh`, 11.16). `e850-fbpal`은 더 이상 올리지 않는다 |
 | 수동 적재 | 카메라 `modprobe fimc-is && modprobe is-cis-ov5647`. `fimc_is`는 내리면 다시 올릴 수 없어 재부팅해야 한다 |
 
 ### 접속

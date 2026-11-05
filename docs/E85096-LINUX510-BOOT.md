@@ -1375,3 +1375,29 @@ decon_pan_display: decon0 state(5), UNBLANK missed
 - HDMI 케이블을 다시 꽂았을 때
 - DECON hibernation 뒤의 색
 - LT8912B HPD(`0xc1` bit7): 화면이 나올 때도 `not connected`로 읽혔다. 이 레지스터 판정은 믿을 수 없다.
+
+### 11.16 콘솔 색 근본 수정: dpu.ko에서 visual과 팔레트 (2026-11-03)
+
+11.14의 `e850-fbpal`과 fbcon rebind를 없애려고 dpu 드라이버 두 곳을 고쳤다(`modules/e850-hdmi/apply.sh`).
+
+| 위치 | 원래 동작 | 고친 것 |
+|---|---|---|
+| `decon_core.c` 창 생성 | `fix.visual`을 정하지 않는다(0 = MONO01). 값은 `decon_set_par()`에서만 정해지는데, 이 함수는 DECON이 꺼져 있으면 그냥 return한다. fbcon이 붙을 때 DECON은 꺼져 있다 | `fbinfo->fix.visual = FB_VISUAL_TRUECOLOR`(32bpp 고정) |
+| `decon_dsi.c` `decon_setcolreg()` | DECON이 OFF이면 쓰기를 버린다. 매 호출마다 `printk("@@@@ ...")`를 한다 | OFF 검사와 printk, 쓰지 않게 된 `decon` 변수를 뺐다. pseudo-palette(`u32[16]`)는 메모리일 뿐이라 하드웨어를 건드리지 않는다 |
+
+- `e850-hdmi.service`에서 fbpal 적재와 fbcon rebind 줄을 뺐다.
+- 빌드는 `kb36.log`이고, 경고는 없다.
+- 새 dpu.ko의 md5는 `4512e825…`다. 11.15판은 `/root/dpu.ko.opencnt`에 남겼다.
+
+**결과(재부팅 후, 2026-11-03).**
+- `Console: switching to colour frame buffer device 240x67`: 부팅 때부터 색 모드로 붙는다. 전에는 mono였다.
+- `e850_fbpal`은 적재되지 않았다.
+- 부팅 뒤 `decon_disable`이 없다. 전에는 rebind 때 한 번 꺼졌다.
+- tty1에 `\033[31m RED \033[32m GREEN \033[34m BLUE \033[0m WHITE`를 쓰고 fb0 메모리를 쟀다. 결과는 0xaa0000, 0x00aa00, 0x0000aa, 0xffffff, 배경 0x000000이다. 색 순서도 fbcon이 맞게 바꾼다.
+
+**결과(전원을 껐다 켠 뒤, 2026-11-06).**
+- dmesg에서 `colour frame buffer device`가 찍혔다.
+- `@@@@` 0건, `decon_disable` 0건이다.
+- 사용자가 HDMI 화면에서 흰 글씨를 확인했다.
+
+**확인하지 않은 것:** DECON hibernation 뒤의 색, 케이블을 다시 꽂았을 때, `ov5647-cap.py --live`를 끝낸 뒤. OV5647은 DVS로 교체되어 마지막 항목은 시험할 수 없다.
