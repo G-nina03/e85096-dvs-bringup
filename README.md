@@ -5,6 +5,10 @@ development board based on Samsung Exynos850.
 
 Status: Work in Progress / Experimental
 
+## E850–DVS 연결 및 포팅 강의 슬라이드
+
+- [E850 DVS 22핀→15핀 연결 및 드라이버 포팅 가이드 (16:9, 편집 가능한 HTML)](docs/E850_DVS_22to15_Connection_Porting_Guide_Editable.html) — CN4 핀맵, Raspberry Pi 4 비교, DVS FPC/케이블 사진, Internal Clock, Reset GPIO, Device Tree, I²C, CSI/CSIS bring-up 및 단계별 점검. 브라우저에서 보려면 파일을 내려받아 열어야 하며 GitHub의 파일 화면은 HTML을 직접 실행하지 않습니다. 핀 연결·전압·RESET은 실측 검증 후 전원을 인가하세요.
+
 ## Start Here: Linux Migration and Student Forks (2026-10-26)
 
 - [작업 대화 기록 2026-11-01~02](docs/SESSION-LOG-20261101-02.md): 8코어·hotplug·카메라 60 fps·흰 글씨 콘솔까지의 대화, 결정, 다음 할 일(MySQL/Apache, YOLO nano).
