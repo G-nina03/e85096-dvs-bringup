@@ -1401,3 +1401,169 @@ decon_pan_display: decon0 state(5), UNBLANK missed
 - 사용자가 HDMI 화면에서 흰 글씨를 확인했다.
 
 **확인하지 않은 것:** DECON hibernation 뒤의 색, 케이블을 다시 꽂았을 때, `ov5647-cap.py --live`를 끝낸 뒤. OV5647은 DVS로 교체되어 마지막 항목은 시험할 수 없다.
+
+### 11.17 DVS(S5KRC1S) I2C 통신 확인 (2026-11-06, 재부팅 없음)
+
+OV5647을 떼고 DVS S5KRC1S를 CN4에 연결했다. 22핀→15핀 Raspberry Pi FPC로 2-Lane 연결이고, 센서는 내부 클록을 쓴다. 드라이버를 만들기 전에 I2C만 확인했다. 참고 자료는 연결/포팅 가이드 슬라이드와 `modules/dvs/README.md`(Linux 7.2.8, 2026-10-07)다.
+
+**버스(관찰).** CN4 13·14번(I2C4) = HSI2C2 = 핀 gpc1-4/5(`hsi2c2-bus`) = `138c0000.hsi2c` = Linux **`i2c-7`**. OV5647 때 쓰던 버스와 같다. DT의 `7-0036`(OV5647) 노드는 남아 있지만 fimc_is를 올리지 않아 바인딩된 드라이버는 없다.
+
+**전원(관찰).** CAM_VDD_33(`vdd_ldo32`)은 `disabled`(3.3 V 설정, 사용자 0)였다. RESET 후보인 CN4 12번(MCLK2/GPC0[2], legacy GPIO 110)은 아무도 잡지 않은 입력 상태였다. 이 상태에서 `i2cdetect -y -r 7` 결과는 응답 없음이었다.
+
+**보드에 한 것.** `modules/dvs-power` 모듈을 만들었다(`/root/dvs-power.ko`, 자동 적재하지 않음).
+- insmod: `regulator_get(NULL,"vdd_ldo32")` enable → RSTN Low 10 ms → High
+- rmmod: RSTN Low → LDO 끔
+- MCLK는 내보내지 않는다.
+
+**결과.**
+```text
+dvs-power: vdd_ldo32 on (3300000 uV), rstn gpio 110 high
+i2cdetect -y -r 7   → 0x10, 0x36 응답 (전원 끄면 둘 다 사라짐)
+0x10 reg16 0x0000..0x000f = 모두 0x00   (S5K 계열의 흔한 ID 위치지만 여기선 0)
+0x10 0x303B: 0xAA 쓰기 → 0x2A, 0x55 쓰기 → 0x55   (10-07 기록과 같음), 끝나고 0x00으로 되돌림
+0x10 0x3915 = 0x24, 0x3001.. = 0x27 0x20 0x00 0x03 0x07 0xd0 ...  (0이 아닌 값 다수)
+0x36 reg16 0x300a, 0x0000.. 및 무주소 읽기 = 모두 0x00
+```
+
+**판단.**
+- I2C 주소 0x10에서 레지스터를 쓰고 되읽을 수 있다. 제어 통신은 확인했다.
+- **CHIP_ID는 확인하지 못했다.** S5KRC1S 레지스터 맵이 없고, 0x0000은 0이다.
+- 0x36의 정체는 모른다. DVS 모듈 전원으로 켜지는 다른 장치로 보이지만 가설이다.
+- RSTN 극성과 22핀 18번 ↔ 15핀 12번 연결은 직접 재지 않았다. RSTN을 Low로 둔 상태에서 응답하는지도 시험하지 않았다.
+- rmmod 뒤 gpc0-2는 출력 Low(CON=1, DAT=0)로 남는다. 재부팅하면 원래 입력 상태로 돌아간다.
+
+### 11.18 S5KRC1S Pablo CIS 드라이버: OV5647과 같은 ISP 우회 경로 (2026-11-06, 부팅 시험 전)
+
+**매뉴얼에서 확인한 것.** 참고 자료는 `S5KRC1S_센서_user_manual.pdf`(사용자 제공, 해석본)다.
+- Table 3: RSTN Low = Hardware Standby, RSTN High = Software Standby(I2C 가능). RESET은 **active-low**다.
+- Table 4: `SEL_MODE_r` 0x3000[1:0]은 0=SW standby, 1=Monitor, 2=Stream. `MODE_SELECT_r` 0x0100[0]은 RO다. 11.17에서 0x3000을 읽은 값 0x00은 SW standby라는 뜻이다.
+- CCI는 최대 400 kHz, MIPI CSI-2는 4-lane(레인당 최대 2.5 Gbps)이다. 960×720, RAW2와 32비트 압축 프레임 형식을 쓴다.
+- **칩 ID 레지스터는 해석본에 없다.** OTP에 칩 ID가 있다는 설명만 있다.
+
+**드라이버.** 커널 트리에 있던 S5KRC1S 브링업 드라이버를 `modules/s5krc1s-pablo`로 가져와 고쳤다. 바꾼 내용은 그 README의 표에 있다.
+- 핵심 변경: RSTN을 GPG1[5]에서 GPC0[2]로 옮겼다. MCLK를 끄고 LDO32 3.3 V를 켠다. `front_sensor_id` = 42와 VISION 시나리오를 넣었다. probe에서 `__init`을 빼고 `module_i2c_driver`로 바꿨다.
+- ISP 우회(bypass) 패치(`modules/ov5647-pablo/bypass.sh`)는 이미 fimc-is에 들어 있어 그대로 쓴다.
+- setA, 0x3915 2-lane, 모드(RAW8 8192×127, 1600 Mbps/lane)는 바꾸지 않았다. 측정하지 않은 값이다.
+
+**빌드와 보드 변경.**
+- `apply.sh`로 커널 트리(볼륨 `e850-kernel`)의 보드 dts include를 OV5647에서 S5KRC1S로 바꿨다. dtbs를 다시 빌드했다.
+- 부트 이미지는 `~/e850-logs/boot-dvs/boot.img`다. 저장소 빌드라 `kvm-arm.mode=none`은 없다(커널이 무시하는 인자). merged.dtb 차이는 카메라 노드뿐이다. 전원 순서의 GPIO가 gpc0 2를 가리키고, LDO32가 3.3 V이고, `front_sensor_id`가 0x2a인지 확인했다.
+- 보드의 `/lib/modules/$(uname -r)/is-cis-s5krc1s.ko`를 새 판(md5 `2cd773b7…`)으로 바꿨다. 원본은 `/root/is-cis-s5krc1s.ko.orig`다. 지금 구워진 DT에는 이 센서 노드가 없어서 재부팅 전에는 영향이 없다.
+
+**아직 하지 않은 것.** boot-dvs 굽기와 재부팅(사용자 허락 필요). 그다음 `modprobe fimc-is && modprobe is-cis-s5krc1s`, S_INPUT(0x10201)으로 SEL_MODE 응답을 확인하고, CSI 프레임 수신을 시험한다.
+
+### 11.19 boot-dvs 부팅, 드라이버 동작, CSI 수신 없음 (2026-11-06)
+
+**보드에 한 것.**
+- `boot-dvs`를 구웠다. 처음에는 fastboot 대기 루프의 `sleep`이 막혀 fastboot 창을 놓쳤고, 워치독이 다시 리셋해 정상 부팅됐다. 두 번째에 구웠다.
+- 부팅 정상. nginx, ssh, e850-hdmi, e850-wifi 모두 active다.
+- `/proc/cmdline` 앞에는 `kvm-arm.mode=protected`가 붙는다. 이미지 밖에서 붙는 값이다.
+- `/usr/local/bin/ov5647-cap.py`에 `--raw8` 옵션(SBGGR8, 8비트)을 더했다. 이전 판은 `/root/ov5647-cap.py.bak`이다.
+- `modules/csis-peek`을 만들었다. CSIS 레지스터를 한 번 출력하고 `-EAGAIN`으로 적재를 끝내는 모듈이다. 이 커널에는 `/dev/mem`이 없다.
+
+**관찰.** 실행한 명령은 `modprobe fimc-is && modprobe is-cis-s5krc1s`와 `ov5647-cap.py --raw8 -W 8192 -H 127`이다.
+```text
+cis_s5krc1s_probe: S5KRC1S bound to sensor instance 1, addr=0x10          (7-0010 → S5KRC1S)
+[M42] pin_ctrl vdd_ldo32 → sen_rst low (pin 110) → sen_rst high → on_i2c
+sensor_s5krc1s_cis_init: S5KRC1S 960x720 DVS, SEL_MODE(0x3000)=0x00
+sensor mode(8192x127@30) = 0 (lane:2); 0x3915=0x06; CSI2_DI=0x2a ... 되읽기 모두 설정값
+[CSI1] settle = 8, speed(1600 Mbps), 2 lane; [VC0] DMA format(2a) (8192, 127)
+sensor_s5krc1s_cis_stream_on: stream ON → SEL_MODE=0x02
+is_sensor_dtp: DTP detected        (300 ms 안에 frame start 없음) → VC0 프레임 0
+```
+- 스트리밍 중 I2C로 읽은 값: `0x30A0=0x01`(전역 설정이 들어감), `0x30A2=0x11`, `0x30A3=0x1f`, `0x3000=0x02`.
+- CSIS 오류 인터럽트는 0건이다.
+- CSIS1(0x14410000) 스트리밍 중 레지스터:
+  - `CMN_CTRL=0x4901`, `PHY_CMN_CTRL=0x7`(클록 레인 + 데이터 2레인 켬)
+  - `INT_SRC0/1=0`, `FRM_CNT_CH0=0`
+  - **`PHY_STATUS=0xf1`을 10 ms 동안 계속 유지**: STOPSTATECLK=1, STOPSTATEDAT=0xF, ULPS 없음
+- 스트리밍 중 `0x3915`를 0x26으로 바꿔도 결과가 같았다. 0x26은 MIPI_CK_MODE=10b(클록 항상 켬)이고, 가이드 `DVS_S5KRC1S_I2C_Initialization_Operation_Guide.md` 11절의 권장값이다.
+
+**판단.**
+- 센서 쪽은 I2C, 전원, RESET, 모드 전환까지 동작한다.
+- CSIS는 클록 레인에서 HS를 한 번도 보지 못했다. 센서 MIPI 송신부가 HS 클록을 내지 않거나, 클록 레인이 SoC까지 오지 않는다.
+- 가설 1(유력): PLL과 출력 클록이 설정되지 않았다.
+  - setA는 "vendor 전체 초기화 표가 아님"이라고 스스로 적고 있다.
+  - 매뉴얼 블록도에는 "PLL & Clock generator via External Clock"이 있다. RPi5 계획 문서의 데이터시트 추출본에는 EXTCLK 6–64 MHz, PLL reference 6–12 MHz가 있고, "PLL divider 표는 vendor table 필요"라고 되어 있다.
+  - CN4 12번은 RSTN으로 쓰므로 SoC MCLK를 줄 수 없다. 모듈에 발진기가 있는지("Internal Clock")는 확인하지 않았다.
+- 가설 2: 22→15 케이블의 클록 레인(8·9번) 배선 문제. 도통은 재지 않았다.
+- STOPSTATEDAT=0xF는 리셋값과 같아서, 선이 끊겨 있어도 이렇게 보일 수 있다. 이 값만으로 둘을 구분할 수 없다.
+
+**다음.**
+- vendor init 시퀀스(PLL/출력 PLL, "Delta_10_2000FPS")를 확보한다.
+- 모듈의 클록원(발진기 유무)을 확인하고, 케이블 8·9번 도통을 잰다.
+- 그 전에 소프트웨어로 해 볼 수 있는 것은 4-lane/1-lane 설정(0x3915[1:0])과 Monitor 모드뿐이다. 클록 레인 상태를 바꿀 근거는 없다.
+
+### 11.20 vendor setfile(Delta_10_2000FPS)로 MIPI 수신 시작, CSIS overflow 패닉 (2026-11-06)
+
+**자료.** 라즈베리파이 5용 드라이버 패키지 `~/Documents/S5KRC1S_DVS_MIPI_Driver_RPi5_20260821.tar.gz`와 저장소 `philipdekim-OnD01/DVS.Decoder.RP5.01`을 참고했다.
+- vendor setfile `Delta_10_2000FPS.txt`(83줄)가 들어 있다. setA에 없던 PLL P/M/S(0x3070–0x3073), PLL 분주(0x3079–0x307B), PLL_PD(0x307E), D-PHY PLL PMS(0x30A5–0x30A7), 클록 enable(0x3080/81/83)이 모두 있다.
+- RPi5 저장소의 `sensor_registers_before_key.txt`에는 동작 중 레지스터 값이 있다. `0x3915=0x04`(4-lane), `0x3901=0x2a`, `0x3910=0x81`, `0x391A=0x7f`다.
+- 저장소에는 `modules/s5krc1s-pablo/setfile/`로 넣었다.
+
+**0x36의 정체.** setfile의 `0x3091=0x6C`(CCI_ADDRESS_CONTROL_2ND)를 7비트로 바꾸면 0x36이다. 11.17의 덤프에서도 0x3091은 0x6c였다. 0x36은 센서 자신의 두 번째 CCI 주소다.
+
+**실패한 실험: 스트리밍 중에 setfile 쓰기.** setA로 스트림을 켠 뒤 standby로 내리고, Delta 전체와 0x3915=0x06 또는 0x26을 쓰고 다시 stream을 켰다. 쓰기는 들어갔다(`0x3080=0x3f`, `0x3915=0x26` 되읽음). 그래도 PHY_STATUS는 0xf1, 프레임은 0이었다.
+
+**드라이버 변경(`modules/s5krc1s-pablo`).**
+- setA Global을 Delta 전체로 바꿨다. RO인 0x0100은 뺐다.
+- `cis_set_global_setting`에서 setfile을 쓰기 전에 500 ms 기다린다. RPi5 도구가 RSTN High 뒤 0.5 s를 기다리기 때문이다.
+- set_two_lane은 `0x3915[1:0]`만 바꾼다. setfile 0x24에 2-lane 비트를 더해 0x26(클록 항상 켬)이 된다.
+
+**결과(재부팅 후 첫 스트림, ssh `dmesg -w`로 Mac에 기록: `~/e850-logs/dvs-dmesg-w.log`).**
+```text
+sensor_s5krc1s_cis_set_global_setting: Delta_10_2000FPS written
+sensor_s5krc1s_set_two_lane: 0x3915=0x26 (2-lane)
+stream ON (0x3000=0x02)
+[bypass] FS G13 ... fcount 1          ← CSIS frame start
+[CSI1][VC0][F1] DMA on [3/1/0]
+[WRN][CSIS1] start/end overlapped
+is_sensor_dtp: DTP detected
+Sensor Stream Off ...
+Kernel panic - not syncing: CSIS error!! CSIS_ERR_OVERFLOW_VC     (ksoftirqd/0)
+```
+- **처음으로 CSIS가 MIPI 프레임을 받았다**(frame start, DMA on, start/end overlapped).
+- 스트림을 끄는 시점에 VC overflow가 나고, `OVERFLOW_PANIC_ENABLE_CSIS`(v8_20_0 is-config.h)가 패닉을 냈다. `panic=0`이라 자동으로 재부팅되지 않는다.
+  - 첫 번째(11:28 UTC)에는 워치독이 리셋하지 않아 사용자가 전원을 껐다 켰다.
+  - 두 번째는 워치독이 리셋했고 보드가 fastboot에 들어갔다.
+- `/proc/last_kmsg`에는 LK 로그만 있고 커널 로그는 없다.
+
+**조치.** `apply.sh`에서 v8_20_0의 `OVERFLOW_PANIC_ENABLE_CSIS`를 `#undef`로 바꿨다. v8_10_0과 v8_1_0도 같은 방식으로 꺼 두었다. fimc-is.ko는 다시 빌드한다.
+
+**조치 후 결과(같은 부팅, 재부팅 없음. 새 fimc-is.ko와 is-cis-s5krc1s.ko를 modprobe).**
+- 캡처 1(`ov5647-cap.py --raw8 -W 8192 -H 127 -n 3 -b 4 -B 8 -t 3`): 패닉 없이 보드가 살아 있었다. **사용자 공간에 온 VC0 프레임은 0개다.**
+  - dmesg: `[CSI1][VC0][F1] DMA on`이 한 번 나온 뒤 CSIS 프레임 카운터가 약 3초 동안 F38까지 올랐다. DMA done은 한 번도 오지 않았다.
+  - stop 시점: `CSIS_ERR_VRESOL_MISMATCH`, `DMAFIFO_FULL`, `OVERFLOW_VC`, `start/end overlapped`.
+  - 가설(측정 안 함): 센서의 timeout flush(0x3910 bit7)가 프레임을 127줄보다 짧게 끊어 CSIS가 세로 해상도 불일치로 본다. RPi5 기록에서는 프레임이 약 21줄이다.
+- 캡처 2: `-t 6`으로 시작하고 1.3초 뒤 `i2ctransfer -f -y 7 w3@0x10 0x39 0x10 0x01`(timeout 끔)을 썼다.
+  - 로그는 `[F1] DMA on`(2123.4 s)까지만 있다. 캡처 중에는 콘솔 printk를 꺼서 그 뒤 기록이 없다.
+  - **약 2130 s부터 CPU0(sugov:0)과 CPU1(kworker/u16:3)에서 soft lockup이 났다.** ping, ssh, ACM 모두 응답이 없다. 워치독 데몬이 살아 있어 6분이 넘도록 리셋되지 않았다. 전원을 다시 넣어야 한다.
+  - 원인이 timeout을 끈 쓰기인지 stop 경로(overflow 처리)인지는 확인하지 못했다. 패닉을 끈 뒤로는 overflow가 패닉 대신 반복되고 있을 수 있다.
+
+### 11.21 프레임 주기를 1000 FPS로 낮추는 시도, 스트림 중 soft lockup 재발 (2026-11-06)
+
+**사용자 요청.** 2000 FPS는 너무 빠르니 1000 FPS로 받는다.
+
+**드라이버 변경.** 매뉴얼 본문에는 0x391x(OUTIF timeout) 정의가 없다. vendor setfile 주석에 따르면 `to_scnt0`(0x3911=0x7C)이 1 µs, `to_scnt1`(0x3912/13=0x03E7, 999)이 1 ms다. setA의 `to_scnt1`을 1999(0x07CF)로 두 배 늘렸다. 이 값이 프레임 주기를 정한다는 것은 **가설**이다. 측정은 아직 못 했다.
+- 모듈은 `build-module.sh`(외부 모듈)로 빌드했다. md5 e296fa2f…다. 보드의 `/lib/modules/.../is-cis-s5krc1s.ko`를 바꿨다. 이전 모듈은 `/root/is-cis-s5krc1s.ko.2000fps`에 있다.
+- 빌드 함정: 트리 안 단일 타깃(`make .../is-cis-s5krc1s.ko`)으로 빌드하면 안 된다.
+  - PATH에 clang이 없으면 syncconfig가 실패하고 `include/generated/autoconf.h`를 지운다. clang을 PATH에 넣고 다시 돌리니 새로 생겼다.
+  - clang이 있어도 modpost가 fimc-is 심볼을 찾지 못한다.
+
+**결과.**
+- 캡처 1(`-t 3`): 보드가 살아 있었다. 결과는 이전과 같다. F1에서 DMA on, F38에서 `OVERFLOW_VC`, `DMAFIFO_FULL`, `DMA_ABORT_DONE`, `VRESOL_MISMATCH`가 났다. `frame was done with error` 뒤 VC0 NDONE과 CANCEL이 나왔고 사용자 공간에 온 프레임은 0개다.
+  - 2000 FPS에서도 3초에 F38이었다. 따라서 이 숫자는 센서 프레임 수가 아니라 드라이버 쪽 카운트로 보인다(가설). 실제 프레임 속도는 아직 모른다.
+- 캡처 2(`-t 4`): 1.5초와 2.5초에 `csis-peek.ko`를 insmod해 FRM_CNT(0x500)를 두 번 읽으려 했다.
+  - 로그는 stream ON(475.6 s)에서 끝났다.
+  - 약 500 s부터 CPU0(sshd)에서 soft lockup이 났다. 다시 전원을 넣어야 했다.
+
+**정리.** lockup은 두 번 났다. 두 번 다 스트림 도중 무언가를 한 캡처였다(I2C 쓰기, insmod). 아무것도 하지 않은 3초 캡처는 두 번 모두 살아 있었다. 원인은 아직 모른다.
+- soft lockup 줄에 스택이 없다. 캡처 스크립트가 콘솔 printk를 끈 상태에서 멈췄기 때문이다.
+- 그래서 `ov5647-cap.py`에 `--loud`(printk를 끄지 않음)를 추가했다. 다음 시험은 `--loud`로 해서 UART에서 멈춘 위치를 본다.
+
+**IRQ 측정(재부팅 후 첫 캡처, `-t 3`, 스트림 도중에는 `/proc/interrupts`만 두 번 읽음. 하드웨어 접근 없음).**
+- IRQ 141(GIC hwirq 174 = SPI 142, DT의 `is_sensor1@14410000` interrupt-name `csi`, CSIS1 메인 인터럽트)이 CPU0에서 **스트림 시작 후 1.2 s 안에 280,796번** 왔다. 1.2 s와 2.2 s 사이에는 늘지 않았다.
+- IRQ 142(SPI 145, VC DMA)는 4번이다.
+- 약 30만 번/s는 프레임 단위(2000 FPS)가 아니라 줄 단위(2000 FPS × 127줄 ≈ 25만)나 오류 인터럽트가 반복되는 규모다(가설).
+- 보드는 살아 있었다. 앞의 두 lockup이 모두 CPU0에서 났으므로, 이 CSIS 인터럽트 폭주가 원인 후보다(확인 안 함).
+- 결과는 이전과 같다. F48에서 오류 프레임, 사용자 공간 프레임 0개.

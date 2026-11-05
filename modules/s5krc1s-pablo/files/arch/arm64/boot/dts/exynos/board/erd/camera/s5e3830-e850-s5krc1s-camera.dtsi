@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * E850-96 / S5E3830: S5KRC1S DVS on CN4 (22-pin -> 15-pin Raspberry Pi FPC, 2 lanes)
+ *
+ *   S5KRC1S -> CN4 -> hsi2c_2 (Linux i2c-7) / sensor instance 1 -> CSI1 -> WDMA1
+ *
+ * Measured on the board (docs/E85096-LINUX510-BOOT.md 11.17):
+ *   CN4 pin 15 CAM_VDD_33 = PMIC LDO32 3.3 V, off on Linux until a consumer enables it
+ *   CN4 pin 12 MCLK2      = GPC0[2] -> DVS RSTN (active low, manual Table 3); MCLK is not
+ *                           driven, the sensor uses its internal clock
+ *   7-bit address 0x10 answers only with LDO32 on and RSTN high
+ * CN4 pin 11 CAM_GPIO (GPG1[5]) goes to DVS pin 17 (NC) and is left alone.
+ */
+
+#include "module_s5krc1s.dtsi"
+
+&is_sensor_s5krc1s {
+	pinctrl-names = "pin0", "pin1", "pin2", "release";
+	pinctrl-0 = <>;
+	pinctrl-1 = <>;
+	pinctrl-2 = <>;
+	pinctrl-3 = <>;
+
+	position = <1>;
+	id = <1>;
+	mclk_ch = <2>;
+	sensor_i2c_ch = <2>;
+
+	status = "okay";
+
+	power_seq {
+		/* use = <1>: take the power sequence from here (a CIS-only driver has no module
+		 * dt callback, docs 7.18). */
+		use = <1>;
+		/* parsed once at probe: drives GPC0[2] low, i.e. holds the DVS in reset */
+		gpio_mclk = <&gpc0 2 0x1>;
+
+		scenario_normal_on {
+			sensor_scenario = <SENSOR_SCENARIO_NORMAL>;
+			gpio_scenario = <GPIO_SCENARIO_ON>;
+
+			10 {
+				pname = "vdd_ldo32";
+				pin = <PIN_REGULATOR 1 2000>;
+			};
+
+			20 {
+				pname = "sen_rst low";
+				pin = <PIN_OUTPUT 0 10000>;
+				gpio = <&gpc0 2 0x1>;
+			};
+
+			30 {
+				pname = "sen_rst high";
+				pin = <PIN_OUTPUT 1 10000>;
+				gpio = <&gpc0 2 0x1>;
+			};
+
+			40 {
+				pname = "on_i2c";
+				pin = <PIN_I2C 1 0>;
+			};
+		};
+
+		scenario_normal_off {
+			sensor_scenario = <SENSOR_SCENARIO_NORMAL>;
+			gpio_scenario = <GPIO_SCENARIO_OFF>;
+
+			10 {
+				pname = "off_i2c";
+				pin = <PIN_I2C 0 0>;
+			};
+
+			20 {
+				pname = "sen_rst low";
+				pin = <PIN_OUTPUT 0 1000>;
+				gpio = <&gpc0 2 0x1>;
+			};
+
+			30 {
+				pname = "vdd_ldo32";
+				pin = <PIN_REGULATOR 0 0>;
+			};
+		};
+
+		/* SENSOR_SCENARIO_VISION: stand-alone sensor without the 3AA/ISP chain (bypass capture) */
+		scenario_vision_on {
+			sensor_scenario = <SENSOR_SCENARIO_VISION>;
+			gpio_scenario = <GPIO_SCENARIO_ON>;
+
+			10 {
+				pname = "vdd_ldo32";
+				pin = <PIN_REGULATOR 1 2000>;
+			};
+
+			20 {
+				pname = "sen_rst low";
+				pin = <PIN_OUTPUT 0 10000>;
+				gpio = <&gpc0 2 0x1>;
+			};
+
+			30 {
+				pname = "sen_rst high";
+				pin = <PIN_OUTPUT 1 10000>;
+				gpio = <&gpc0 2 0x1>;
+			};
+
+			40 {
+				pname = "on_i2c";
+				pin = <PIN_I2C 1 0>;
+			};
+		};
+
+		scenario_vision_off {
+			sensor_scenario = <SENSOR_SCENARIO_VISION>;
+			gpio_scenario = <GPIO_SCENARIO_OFF>;
+
+			10 {
+				pname = "off_i2c";
+				pin = <PIN_I2C 0 0>;
+			};
+
+			20 {
+				pname = "sen_rst low";
+				pin = <PIN_OUTPUT 0 1000>;
+				gpio = <&gpc0 2 0x1>;
+			};
+
+			30 {
+				pname = "vdd_ldo32";
+				pin = <PIN_REGULATOR 0 0>;
+			};
+		};
+	};
+};
+
+/* CAM_VDD_33 is 3.3 V (Android 10 DT); the ERD PMIC dtsi fixes it at 2.8 V */
+&l32_reg {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+};
+
+&hsi2c_2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	gpios = <&gpc1 4 0 &gpc1 5 0>;
+	status = "okay";
+	clock-frequency = <400000>;	/* CCI: up to 400 kHz (manual 1.2) */
+
+	samsung,reset-before-trans;
+
+	s5krc1s@10 {
+		compatible = "samsung,exynos-is-cis-s5krc1s";
+		reg = <0x10>;
+		id = <1>;
+		setfile = "setA";
+	};
+};
+
+&is_sensor1 {
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	scenario = <SENSOR_SCENARIO_NORMAL>;
+	id = <1>;
+	csi_ch = <1>;
+
+	dma_ch = <1 1 1 1>;
+	vc_ch = <0 1 2 3>;
+
+	flite_ch = <FLITE_ID_NOTHING>;
+	is_bns = <0>;
+	csi_mux = <0x1>;
+
+	status = "okay";
+};
+
+/* S_INPUT(position 1 = FRONT) looks the sensor up by vender front_sensor_id */
+&exynos_is {
+	vender {
+		front_sensor_id = <SENSOR_NAME_S5KRC1S>;	/* 42 */
+	};
+};

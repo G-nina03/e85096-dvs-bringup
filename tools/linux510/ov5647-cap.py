@@ -46,6 +46,7 @@ CID_IS_S_SENSOR_SIZE = 0x009a0000 | 0x1000 | 69    # sensor mode is looked up fr
 TYPE_CAPTURE, TYPE_OUTPUT = 9, 10                  # V4L2_BUF_TYPE_VIDEO_{CAPTURE,OUTPUT}_MPLANE
 MEMORY_DMABUF = 4
 PIX_FMT_SBGGR10 = 0x30314742                       # 'BG10'
+PIX_FMT_SBGGR8 = 0x31384142                        # 'BA81': S5KRC1S DVS RAW8 transport (8192x127)
 INPUT = (1 << 16) | (2 << 8) | 1                   # position 1 (FRONT), vindex 2 (SS1), leader
 VID_SS1, VID_SS1VC0 = 2, 114                       # IS_VIDEO_SS1_NUM, IS_VIDEO_SS1VC0_NUM
 
@@ -75,14 +76,17 @@ ap.add_argument('-o', default='/tmp/ov5647')
 ap.add_argument('-t', type=float, default=3.0, help='timeout per frame, s')
 ap.add_argument('-v', action='store_true', help='log every ioctl in the loop')
 ap.add_argument('--live', action='store_true', help='draw every frame on /dev/fb0, save nothing')
+ap.add_argument('--loud', action='store_true', help='keep console printk on (to see a hang on UART)')
+ap.add_argument('--raw8', action='store_true', help='RAW8 (S5KRC1S DVS: -W 8192 -H 127)')
 a = ap.parse_args()
+PIX_FMT, PIX_BITS = (PIX_FMT_SBGGR8, 8) if a.raw8 else (PIX_FMT_SBGGR10, 10)
 
 # The boot command line has loglevel=8 ignore_loglevel: the driver's per-frame messages then go
 # out on the 115200 baud UART from the interrupt handler, CSIS loses interrupts and a 60 fps
 # stream drops to ~5 fps. Keep them in dmesg only while streaming.
 QUIET = (('/sys/module/printk/parameters/ignore_loglevel', 'N'), ('/proc/sys/kernel/printk', '1'))
 saved_printk = [open(f).read().split()[0] for f, _ in QUIET]
-for f, v in QUIET:
+for f, v in QUIET * (not a.loud):
     open(f, 'w').write(v)
 atexit.register(lambda: [open(f, 'w').write(v) for (f, _), v in zip(QUIET, saved_printk)])
 if a.live and a.n == 5:
@@ -110,7 +114,7 @@ class Node:
         # struct v4l2_format: type, union @8 = v4l2_pix_format_mplane (w h pixfmt field colorspace ...)
         fmt = bytearray(208)
         struct.pack_into('I', fmt, 0, self.type)
-        struct.pack_into('5I', fmt, 8, w, h, PIX_FMT_SBGGR10, 1, 0)
+        struct.pack_into('5I', fmt, 8, w, h, PIX_FMT, 1, 0)
         fcntl.ioctl(self.fd, VIDIOC_S_FMT, fmt)
 
     def buffer(self, index, planes, n):
@@ -161,7 +165,7 @@ class Node:
 
 
 def node_entry(meta, off, vid, w, h):
-    struct.pack_into('2I4I4I2I', meta, off, vid, 1, 0, 0, w, h, 0, 0, w, h, PIX_FMT_SBGGR10, 10)
+    struct.pack_into('2I4I4I2I', meta, off, vid, 1, 0, 0, w, h, 0, 0, w, h, PIX_FMT, PIX_BITS)
 
 
 ldr = Node('/dev/video102', TYPE_OUTPUT, 'ss1 (leader)')
@@ -171,7 +175,7 @@ ldr.s_fmt(a.W, a.H)
 vc0 = Node('/dev/video214', TYPE_CAPTURE, 'ss1vc0')
 vc0.s_input(0)
 vc0.s_fmt(a.W, a.H)
-log('S_INPUT 0x%x, sensor size %dx%d, S_FMT BG10 on both nodes' % (INPUT, a.W, a.H))
+log('S_INPUT 0x%x, sensor size %dx%d, S_FMT %d-bit on both nodes' % (INPUT, a.W, a.H, PIX_BITS))
 ldr.reqbufs(a.B)
 vc0.reqbufs(a.b)
 

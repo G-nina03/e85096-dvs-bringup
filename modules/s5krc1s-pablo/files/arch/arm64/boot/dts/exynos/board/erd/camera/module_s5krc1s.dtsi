@@ -1,0 +1,97 @@
+/*
+ * Samsung S5KRC1S DVS module definition for Exynos Pablo
+ *
+ * Initial bring-up profile:
+ *   - physical sensor: 960 x 720
+ *   - host transport: RAW8 compatibility mode
+ *   - payload: 8192 bytes
+ *   - packet count: 127 (temporary; verify 127/128 on E850)
+ *   - 2 data lanes for E850-96 CN4
+ *
+ * This file describes the generic sensor module. Board wiring, reset and
+ * I2C/CSI routing are in s5e3830-e850-s5krc1s-camera.dtsi.
+ */
+
+#include <dt-bindings/camera/exynos_is_dt.h>
+
+/ {
+	fragment@s5krc1s_module {
+		target-path = "/";
+
+		__overlay__ {
+			is_sensor_s5krc1s: is_sensor_s5krc1s@42 {
+				compatible = "samsung,sensor-module";
+
+				sensor_id = <SENSOR_NAME_S5KRC1S>;
+
+				active_width = <960>;
+				active_height = <720>;
+				margin_left = <0>;
+				margin_right = <0>;
+				margin_top = <0>;
+				margin_bottom = <0>;
+
+				/*
+				 * DVS scan/event timing is not conventional video FPS.
+				 * 30 is only a framework bring-up value.
+				 */
+				max_framerate = <30>;
+				bitwidth = <8>;
+
+				sensor_maker = "SLSI";
+				sensor_name = "S5KRC1S";
+				setfile_name = "setfile_s5krc1s.bin";
+
+				status = "okay";
+
+				vc_extra {
+					stat0 = <>;
+					stat1 = <>;
+					stat2 = <>;
+					stat3 = <>;
+				};
+
+				modes {
+					/*
+					 * common =
+					 * <width height fps settle mode lane speed
+					 *  interleave lrte pd_mode ex_mode>
+					 *
+					 * First bring-up uses CSI-2 RAW8 (DT 0x2A).
+					 * mipi_speed=1600 means 1600 Mbps/lane and MUST
+					 * be changed if the actual S5KRC1S PLL/setfile
+					 * is configured for a different lane rate.
+					 */
+					mode0 {
+						common =
+							<8192 127 30
+							 0 0
+							 CSI_DATA_LANES_2
+							 1600
+							 CSI_MODE_VC_ONLY
+							 LRTE_DISABLE
+							 PD_NONE
+							 EX_NONE>;
+
+						vc0 =
+							<0 HW_FORMAT_RAW8 8192 127
+							 HW_FORMAT_RAW8 VC_NOTHING
+							 8192 127>;
+
+						vc1 =
+							<1 HW_FORMAT_UNKNOWN 0 0
+							 HW_FORMAT_UNKNOWN VC_NOTHING 0 0>;
+
+						vc2 =
+							<2 HW_FORMAT_UNKNOWN 0 0
+							 HW_FORMAT_UNKNOWN VC_NOTHING 0 0>;
+
+						vc3 =
+							<3 HW_FORMAT_UNKNOWN 0 0
+							 HW_FORMAT_UNKNOWN VC_NOTHING 0 0>;
+					};
+				};
+			};
+		};
+	};
+};
