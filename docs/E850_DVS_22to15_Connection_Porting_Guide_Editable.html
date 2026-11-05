@@ -103,24 +103,42 @@
     </div></section><section class="slide" id="slide-13" data-title="중요: CN4의 I2C4는 Linux에서 hsi2c_2입니다"><div class="slide-inn">
     <div class="slide-head"><div><div class="eyebrow">12 / Device Tree</div><h2>중요: CN4의 I2C4는 Linux에서 hsi2c_2입니다</h2></div><div class="head-num">13</div></div><div class="slide-body">
 <div class="grid2"><div class="block"><div class="factpair"><div class="factlabel">E850 실크·매뉴얼 신호</div><div class="factvalue">I2C4_SCL / I2C4_SDA</div></div><div class="downlink">Exynos 핀 기능: XHSI2C2 / GPC1[5,4]</div><div class="factpair selected"><div class="factlabel">Linux SoC DT 라벨</div><div class="factvalue code-font">&amp;usi_hsi2c_2<br>&amp;hsi2c_2</div></div><div class="notice amber"><strong>&amp;i2c_4 와 혼동 금지</strong><br>Upstream `i2c_4`는 다른 핀 그룹(gpp1)으로 정의되어 있습니다.</div></div>
-<div class="block code-block"><div class="code-label">DTS 구조 예시 · 실행 전 보드에 맞게 보정</div><pre>// 개념 코드: I²C address / GPIO phandle 미확정
+<div class="block code-block"><div class="code-label">DTS 구조 예시 · 실행 전 보드에 맞게 보정</div><pre>// DVS 7-bit I2C address=0x10 확인 / GPIO phandle BSP 확인
 &amp;usi_hsi2c_2 {
     status = "okay";
 };
 
 &amp;hsi2c_2 {
     status = "okay";
-    // S5KRC1S sensor node 추가
-    // reset-gpios: GPC0[2] / active-low
-    // port/endpoint: data-lanes=&lt;1 2&gt;
+    dvs@10 {
+        compatible = "nrv,rc1s";
+        reg = &lt;0x10&gt;;
+        // reset-gpios: GPC0[2] active-low
+        // port/endpoint: data-lanes=&lt;1 2&gt;
+    };
 };
 
 // CSI host endpoint, clocks, PHY
-// vendor BSP 정의를 먼저 확인해야 함</pre><div class="code-warning">센서 I²C 주소와 CSI compatible은 아직 검증되지 않았으므로 의도적으로 기입하지 않았습니다.</div></div></div>
+// vendor BSP 정의를 먼저 확인해야 함</pre><div class="code-warning">DVS I²C 0x10은 2026-10-07 E850 실측 검증됨. CSI host/PHY/streaming은 미검증.</div></div></div>
 </div>
     <div class="slide-foot"><span>[S2] E850 매뉴얼 CN4 · [S4] exynos850.dtsi hsi2c_2 정의 · [S5] pinctrl</span><span>13 / <span class="total-num"></span></span></div>
-    </div></section><section class="slide" id="slide-14" data-title="RESET·I²C·스트리밍 제어 흐름 구현"><div class="slide-inn">
-    <div class="slide-head"><div><div class="eyebrow">13 / 센서 드라이버</div><h2>RESET·I²C·스트리밍 제어 흐름 구현</h2></div><div class="head-num">14</div></div><div class="slide-body">
+    </div></section><section class="slide" id="slide-14" data-title="DVS I²C 주소 0x10 실측과 8비트 표기"><div class="slide-inn">
+<div class="slide-head"><div><div class="eyebrow">DVS I²C / 검증된 사실</div><h2>DVS의 Linux I²C ID는 0x10입니다</h2></div><div class="head-num">14</div></div>
+<div class="slide-body"><div class="grid2"><div class="block">
+<div class="key-stat"><div>0x10</div><p>Linux에서 사용하는 <strong>7-bit I²C 슬레이브 주소</strong></p></div>
+<div class="testrows"><div><span>8-bit Write / Read</span><b>0x20 / 0x21</b></div><div><span>Device Tree</span><b>dvs@10 / nrv,rc1s</b></div><div><span>Linux I²C client</span><b>0-0010</b></div><div><span>E850 readback</span><b>0x303B = 0x55</b></div></div>
+<div class="notice pale">2026-10-07: RESET + I²C 제어 통신 성공. CHIP_ID와 MIPI CSI-2 영상 수신은 아직 검증되지 않았습니다.</div></div>
+<div class="block code-block"><div class="code-label">보드에서 사용할 명령 · 실제 버스 번호 확인</div><pre>i2cdetect -l
+sudo i2cdetect -y &lt;actual-bus&gt;
+
+# 0x10: Linux 7-bit ID
+# 0x20 / 0x21: 8-bit write / read 표기
+# 드라이버 점유 중이면 UU 표시 가능</pre>
+<div class="code-warning">Raspberry Pi·Jetson의 버스 번호 1은 예시입니다. E850에서는 HSI2C2와 연결된 실제 Linux 어댑터를 확인해야 합니다.</div>
+<div class="source-mini"><a href="https://github.com/philipdekim-OnD01/e85096-dvs-bringup/blob/main/docs/E85096-DVS-I2C-ADDRESS-VERIFICATION.md" target="_blank">[S6] 공개 가능한 실측 근거 및 주의사항</a></div></div></div></div>
+<div class="slide-foot"><span>E850 실측 2026-10-07 · 상세한 예비 데이터시트 PAD/레지스터 정보는 공개 배포 검토 후 반영</span><span> / <span class="total-num"></span></span></div></div></section>
+<section class="slide" id="slide-15" data-title="RESET·I²C·스트리밍 제어 흐름 구현"><div class="slide-inn">
+    <div class="slide-head"><div><div class="eyebrow">13 / 센서 드라이버</div><h2>RESET·I²C·스트리밍 제어 흐름 구현</h2></div><div class="head-num">15</div></div><div class="slide-body">
 <div class="grid2"><div class="block code-block"><div class="code-label">드라이버 의사코드 · 시퀀스 표현</div><pre>probe():
   request(regulators, reset_gpio)
   enable(sensor_power)
@@ -138,11 +156,11 @@ s_stream(ON):
 
 s_stream(OFF):
   stop_streaming()</pre></div>
-<div class="block"><h3>개발 시 고정해야 할 네 가지</h3><div class="rulelist"><div><b>01</b><p><strong>RESET polarity</strong><br>RSTN Low가 실제 리셋인지 확인</p></div><div><b>02</b><p><strong>I²C address</strong><br>기존 RP5 코드/스캔 결과로 확정</p></div><div><b>03</b><p><strong>CSI lane count</strong><br>2개의 Data Lane만 활성화</p></div><div><b>04</b><p><strong>Output packing</strong><br>event payload 형식을 E850 capture 버퍼와 일치</p></div></div></div></div>
+<div class="block"><h3>개발 시 고정해야 할 네 가지</h3><div class="rulelist"><div><b>01</b><p><strong>RESET polarity</strong><br>RSTN Low가 실제 리셋인지 확인</p></div><div><b>02</b><p><strong>I²C address</strong><br>E850 검증 7-bit 0x10</p></div><div><b>03</b><p><strong>CSI lane count</strong><br>2개의 Data Lane만 활성화</p></div><div><b>04</b><p><strong>Output packing</strong><br>event payload 형식을 E850 capture 버퍼와 일치</p></div></div></div></div>
 </div>
-    <div class="slide-foot"><span>의사코드는 동작 설명용으로 빌드 가능한 커널 소스가 아님</span><span>14 / <span class="total-num"></span></span></div>
-    </div></section><section class="slide" id="slide-15" data-title="첫 단계는 현재 구동 중인 E850 BSP를 조사하는 것"><div class="slide-inn">
-    <div class="slide-head"><div><div class="eyebrow">14 / 포팅 현장 점검</div><h2>첫 단계는 현재 구동 중인 E850 BSP를 조사하는 것</h2></div><div class="head-num">15</div></div><div class="slide-body">
+    <div class="slide-foot"><span>의사코드는 동작 설명용으로 빌드 가능한 커널 소스가 아님</span><span>15 / <span class="total-num"></span></span></div>
+    </div></section><section class="slide" id="slide-16" data-title="첫 단계는 현재 구동 중인 E850 BSP를 조사하는 것"><div class="slide-inn">
+    <div class="slide-head"><div><div class="eyebrow">14 / 포팅 현장 점검</div><h2>첫 단계는 현재 구동 중인 E850 BSP를 조사하는 것</h2></div><div class="head-num">16</div></div><div class="slide-body">
 <div class="grid2"><div class="block code-block"><div class="code-label">Mac → E850 ADB 연결 후</div><pre>adb devices
 adb shell uname -a
 adb shell cat /proc/version
@@ -155,41 +173,41 @@ adb shell 'ls -l /dev/video* /dev/media* 2>/dev/null'
 adb shell 'dmesg | grep -Ei "csi|csis|fimc|phy|camera|i2c"'</pre></div>
 <div class="block"><h3>결과를 이렇게 해석합니다</h3><div class="testrows"><div><span>video / media 존재</span><b>후속 토폴로지 확인</b></div><div><span>CSI/PHY 로그 존재</span><b>vendor driver 우선 검토</b></div><div><span>센서만 I²C 응답</span><b>영상 수신부 추가 작업</b></div><div><span>장치·로그 모두 없음</span><b>CSI 지원 BSP 확보가 선행</b></div></div><div class="notice pale">`/dev/video0`이 존재해도 반드시 CN4 CSI 포트라는 의미는 아닙니다. 연결된 Media Graph를 확인해야 합니다.</div></div></div>
 </div>
-    <div class="slide-foot"><span>Android ADB 기준 · 일부 명령은 root 및 SELinux 정책에 따라 제한될 수 있음</span><span>15 / <span class="total-num"></span></span></div>
-    </div></section><section class="slide" id="slide-16" data-title="4-Lane 센서 출력은 CN4에서 2-Lane으로 바꾸어야 합니다"><div class="slide-inn">
-    <div class="slide-head"><div><div class="eyebrow">15 / DVS 모드 설정</div><h2>4-Lane 센서 출력은 CN4에서 2-Lane으로 바꾸어야 합니다</h2></div><div class="head-num">16</div></div><div class="slide-body">
+    <div class="slide-foot"><span>Android ADB 기준 · 일부 명령은 root 및 SELinux 정책에 따라 제한될 수 있음</span><span>16 / <span class="total-num"></span></span></div>
+    </div></section><section class="slide" id="slide-17" data-title="4-Lane 센서 출력은 CN4에서 2-Lane으로 바꾸어야 합니다"><div class="slide-inn">
+    <div class="slide-head"><div><div class="eyebrow">15 / DVS 모드 설정</div><h2>4-Lane 센서 출력은 CN4에서 2-Lane으로 바꾸어야 합니다</h2></div><div class="head-num">17</div></div><div class="slide-body">
 <div class="grid2"><div class="block"><div class="lane-picture"><div class="lane-t">DVS 22핀 출력</div><div class="lane active"><b>Data0 ±</b><span>→ E850 D0</span></div><div class="lane active"><b>Data1 ±</b><span>→ E850 D1</span></div><div class="lane inactive"><b>Data2 ±</b><span>미연결</span></div><div class="lane inactive"><b>Data3 ±</b><span>미연결</span></div><div class="lane clk"><b>Clock ±</b><span>→ E850 CLK</span></div></div></div>
 <div class="block"><h3>프로젝트 기존 설정에서 확인할 것</h3><div class="rulelist"><div><b>1</b><p>Setfile의 <strong>2-Lane mode</strong> 활성화 여부</p></div><div><b>2</b><p>프로젝트에서 언급된 <code>0x3915</code>의 비트 정의를 센서 레지스터 맵으로 대조</p></div><div><b>3</b><p>lane rate × 2가 실제 이벤트 데이터 대역폭을 감당하는지 계산</p></div><div><b>4</b><p>CSI 수신기가 지원하는 Data Type/Packet ID와 DVS 스트림을 맞춤</p></div></div><div class="notice amber">`0x3915`는 기존 프로젝트 메모의 단서이며, 정확한 비트·설정값은 아직 이 자료에서 검증되지 않았습니다.</div></div></div>
 </div>
-    <div class="slide-foot"><span>고속 출력이 필요하면 장기적으로 E850의 별도 4-Lane 경로 검토 가능</span><span>16 / <span class="total-num"></span></span></div>
-    </div></section><section class="slide" id="slide-17" data-title="고장 위치를 분리하는 6단계 검증 사다리"><div class="slide-inn">
-    <div class="slide-head"><div><div class="eyebrow">16 / Bring-up 순서</div><h2>고장 위치를 분리하는 6단계 검증 사다리</h2></div><div class="head-num">17</div></div><div class="slide-body">
-<div class="ladder"><div class="ladderstep"><b>1</b><div><h3>POWER</h3><p>3.3V · GND · RESET</p></div><small>전기적 안전</small></div><div class="ladderstep"><b>2</b><div><h3>I²C</h3><p>Device ACK · Sensor ID</p></div><small>제어 통신</small></div><div class="ladderstep"><b>3</b><div><h3>CONFIG</h3><p>Internal Clock / 2-Lane</p></div><small>센서 모드</small></div><div class="ladderstep"><b>4</b><div><h3>CSI RX</h3><p>Clock Lock · Packet / ECC / CRC</p></div><small>링크 성립</small></div><div class="ladderstep"><b>5</b><div><h3>CAPTURE</h3><p>DMA buffer · `/dev/videoX`</p></div><small>드라이버 수신</small></div><div class="ladderstep"><b>6</b><div><h3>DECODER</h3><p>Event Parse · Timestamp 검증</p></div><small>응용 데이터</small></div></div>
+    <div class="slide-foot"><span>고속 출력이 필요하면 장기적으로 E850의 별도 4-Lane 경로 검토 가능</span><span>17 / <span class="total-num"></span></span></div>
+    </div></section><section class="slide" id="slide-18" data-title="고장 위치를 분리하는 6단계 검증 사다리"><div class="slide-inn">
+    <div class="slide-head"><div><div class="eyebrow">16 / Bring-up 순서</div><h2>고장 위치를 분리하는 6단계 검증 사다리</h2></div><div class="head-num">18</div></div><div class="slide-body">
+<div class="ladder"><div class="ladderstep"><b>1</b><div><h3>POWER</h3><p>3.3V · GND · RESET</p></div><small>전기적 안전</small></div><div class="ladderstep"><b>2</b><div><h3>I²C</h3><p>0x10 ACK/0x303B 확인 · CHIP_ID 미확인</p></div><small>제어 통신</small></div><div class="ladderstep"><b>3</b><div><h3>CONFIG</h3><p>Internal Clock / 2-Lane</p></div><small>센서 모드</small></div><div class="ladderstep"><b>4</b><div><h3>CSI RX</h3><p>Clock Lock · Packet / ECC / CRC</p></div><small>링크 성립</small></div><div class="ladderstep"><b>5</b><div><h3>CAPTURE</h3><p>DMA buffer · `/dev/videoX`</p></div><small>드라이버 수신</small></div><div class="ladderstep"><b>6</b><div><h3>DECODER</h3><p>Event Parse · Timestamp 검증</p></div><small>응용 데이터</small></div></div>
 <div class="notice pale bottom-notice">성공 판정은 ‘영상이 나온다’가 아니라 <strong>CSI 패킷 오류 없이 이벤트가 유효하게 파싱된다</strong>는 것까지 포함합니다.</div>
 </div>
-    <div class="slide-foot"><span>DVS 이벤트 센서는 일반 Bayer 카메라처럼 이미지가 바로 나타나지 않을 수 있음</span><span>17 / <span class="total-num"></span></span></div>
-    </div></section><section class="slide" id="slide-18" data-title="증상 → 첫 점검 위치 → 다음 판단"><div class="slide-inn">
-    <div class="slide-head"><div><div class="eyebrow">17 / 실패 유형별 조치</div><h2>증상 → 첫 점검 위치 → 다음 판단</h2></div><div class="head-num">18</div></div><div class="slide-body">
-<div class="block"><table class="debug-table"><thead><tr><th>관측 증상</th><th>우선 조사</th><th>검증 단계</th></tr></thead><tbody><tr><td>I²C ACK 없음</td><td>전원·리셋·I/O 레벨·SCL/SDA</td><td>01→02</td></tr><tr><td>Sensor ID OK, CSI 0 packet</td><td>D-PHY/2-Lane/Clock lane/CSI host</td><td>03→04</td></tr><tr><td>ECC/CRC 증가</td><td>P/N, Lane 순서, 케이블 접점, 속도</td><td>04</td></tr><tr><td>DMA Buffer 없음</td><td>V4L2 pipeline · media graph · IRQ</td><td>04→05</td></tr><tr><td>수신되나 이벤트 깨짐</td><td>RAW packing · frame layout · setfile</td><td>05→06</td></tr></tbody></table></div><div class="two-col after-table"><div class="notice amber"><strong>RESET 문제</strong><br>호스트 드라이버에서 MCLK 출력이 비활성화되기 전에 핀 12에 신호가 발생하지 않도록 Boot/Pinctrl 상태까지 확인</div><div class="notice pale"><strong>CSI 호스트 미지원</strong><br>Setfile을 아무리 수정해도 호스트 PHY·DMA가 준비되지 않으면 프레임을 받을 수 없음</div></div>
+    <div class="slide-foot"><span>DVS 이벤트 센서는 일반 Bayer 카메라처럼 이미지가 바로 나타나지 않을 수 있음</span><span>18 / <span class="total-num"></span></span></div>
+    </div></section><section class="slide" id="slide-19" data-title="증상 → 첫 점검 위치 → 다음 판단"><div class="slide-inn">
+    <div class="slide-head"><div><div class="eyebrow">17 / 실패 유형별 조치</div><h2>증상 → 첫 점검 위치 → 다음 판단</h2></div><div class="head-num">19</div></div><div class="slide-body">
+<div class="block"><table class="debug-table"><thead><tr><th>관측 증상</th><th>우선 조사</th><th>검증 단계</th></tr></thead><tbody><tr><td>I²C ACK 없음</td><td>전원·리셋·I/O 레벨·SCL/SDA</td><td>01→02</td></tr><tr><td>I²C 응답 OK, CSI 0 packet</td><td>D-PHY/2-Lane/Clock lane/CSI host</td><td>03→04</td></tr><tr><td>ECC/CRC 증가</td><td>P/N, Lane 순서, 케이블 접점, 속도</td><td>04</td></tr><tr><td>DMA Buffer 없음</td><td>V4L2 pipeline · media graph · IRQ</td><td>04→05</td></tr><tr><td>수신되나 이벤트 깨짐</td><td>RAW packing · frame layout · setfile</td><td>05→06</td></tr></tbody></table></div><div class="two-col after-table"><div class="notice amber"><strong>RESET 문제</strong><br>호스트 드라이버에서 MCLK 출력이 비활성화되기 전에 핀 12에 신호가 발생하지 않도록 Boot/Pinctrl 상태까지 확인</div><div class="notice pale"><strong>CSI 호스트 미지원</strong><br>Setfile을 아무리 수정해도 호스트 PHY·DMA가 준비되지 않으면 프레임을 받을 수 없음</div></div>
 </div>
-    <div class="slide-foot"><span>실제 오류 로그와 카메라 제어 레지스터를 함께 수집하면 원인 축소가 빠름</span><span>18 / <span class="total-num"></span></span></div>
-    </div></section><section class="slide" id="slide-19" data-title="완료 판단은 다음 7개 체크포인트로"><div class="slide-inn">
-    <div class="slide-head"><div><div class="eyebrow">18 / 포팅 완료 기준</div><h2>완료 판단은 다음 7개 체크포인트로</h2></div><div class="head-num">19</div></div><div class="slide-body">
-<div class="grid2"><div class="block"><h3>전기·연결 검증</h3><div class="checklist"><label><input type="checkbox"> FPC 핀 1·22 / E850 핀 1·15 방향 확인</label><label><input type="checkbox"> 실제 22→15 도통표 확보</label><label><input type="checkbox"> 3.3V 전원·RESET·I²C 전압 검증</label><label><input type="checkbox"> RESET을 GPIO로 제어하여 정상 해제 확인</label></div></div><div class="block"><h3>드라이버·데이터 검증</h3><div class="checklist"><label><input type="checkbox"> E850 CSI RX 호스트 드라이버 확인</label><label><input type="checkbox"> Sensor ID 및 2-Lane CSI 수신 성공</label><label><input type="checkbox"> DVS Event Parser에서 유효 이벤트 확인</label></div><div class="result"><b>최종 Deliverable</b><p>연결 도통표 + DTS/드라이버 커밋 + UART/ADB 로그 + 정상 이벤트 샘플</p></div></div></div>
+    <div class="slide-foot"><span>실제 오류 로그와 카메라 제어 레지스터를 함께 수집하면 원인 축소가 빠름</span><span>19 / <span class="total-num"></span></span></div>
+    </div></section><section class="slide" id="slide-20" data-title="완료 판단은 다음 7개 체크포인트로"><div class="slide-inn">
+    <div class="slide-head"><div><div class="eyebrow">18 / 포팅 완료 기준</div><h2>완료 판단은 다음 7개 체크포인트로</h2></div><div class="head-num">20</div></div><div class="slide-body">
+<div class="grid2"><div class="block"><h3>전기·연결 검증</h3><div class="checklist"><label><input type="checkbox"> FPC 핀 1·22 / E850 핀 1·15 방향 확인</label><label><input type="checkbox"> 실제 22→15 도통표 확보</label><label><input type="checkbox"> 3.3V 전원·RESET·I²C 전압 검증</label><label><input type="checkbox"> RESET을 GPIO로 제어하여 정상 해제 확인</label></div></div><div class="block"><h3>드라이버·데이터 검증</h3><div class="checklist"><label><input type="checkbox"> E850 CSI RX 호스트 드라이버 확인</label><label><input type="checkbox"> CHIP_ID 확인 및 2-Lane CSI 수신 성공</label><label><input type="checkbox"> DVS Event Parser에서 유효 이벤트 확인</label></div><div class="result"><b>최종 Deliverable</b><p>연결 도통표 + DTS/드라이버 커밋 + UART/ADB 로그 + 정상 이벤트 샘플</p></div></div></div>
 </div>
-    <div class="slide-foot"><span>체크박스는 로컬 브라우저에서 직접 체크 가능 · 입력한 결과는 HTML 내보내기로 보존</span><span>19 / <span class="total-num"></span></span></div>
-    </div></section><section class="slide" id="slide-20" data-title="자료 기준과 다음 작업"><div class="slide-inn">
-    <div class="slide-head"><div><div class="eyebrow">19 / 참고자료와 실행 결정</div><h2>자료 기준과 다음 작업</h2></div><div class="head-num">20</div></div><div class="slide-body">
+    <div class="slide-foot"><span>체크박스는 로컬 브라우저에서 직접 체크 가능 · 입력한 결과는 HTML 내보내기로 보존</span><span>20 / <span class="total-num"></span></span></div>
+    </div></section><section class="slide" id="slide-21" data-title="자료 기준과 다음 작업"><div class="slide-inn">
+    <div class="slide-head"><div><div class="eyebrow">19 / 참고자료와 실행 결정</div><h2>자료 기준과 다음 작업</h2></div><div class="head-num">21</div></div><div class="slide-body">
 <div class="grid2"><div class="block sources"><h3>공식 확인 자료</h3>
 <p><strong>[S1]</strong> <a href="https://github.com/raspberrypi/documentation/blob/master/documentation/asciidoc/accessories/camera/pinouts.adoc" target="_blank">Raspberry Pi · 15핀 / 22핀 CSI 공식 핀아웃</a></p>
 <p><strong>[S2]</strong> <a href="https://www.96boards.org/documentation/consumer/e850-96b/hardware-docs/files/e850-96b-hardware-user-manual.pdf" target="_blank">WinLink E850-96 Hardware User Manual v1.12 · p.9</a></p>
 <p><strong>[S3]</strong> <a href="https://www.96boards.org/documentation/consumer/e850-96b/hardware-docs/files/e850-96b-schematics.pdf" target="_blank">E850-96 Schematics · Sheet 12 CN4</a></p>
 <p><strong>[S4]</strong> <a href="https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/exynos/exynos850.dtsi" target="_blank">Linux upstream exynos850.dtsi</a> / <a href="https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/exynos/exynos850-e850-96.dts" target="_blank">e850-96.dts</a></p>
 <p><strong>[S5]</strong> <a href="https://android.googlesource.com/kernel/common/+/790c2f9d15b59/arch/arm64/boot/dts/exynos/exynos850-pinctrl.dtsi" target="_blank">Exynos850 pinctrl · gpc0-2 GPIO 출력 정의</a></p>
-<p class="source-caveat">DVS 핀 17=NC, 18=RSTN과 0x3915 관련 사항은 기존 프로젝트 대화 기준이며 실물 회로도/레지스터 맵 확인 필요.</p></div>
+<p><strong>[S6]</strong> <a href="https://github.com/philipdekim-OnD01/e85096-dvs-bringup/blob/main/docs/E85096-DVS-I2C-ADDRESS-VERIFICATION.md" target="_blank">E850 DVS I²C 0x10 및 0x303B=0x55 실측 설명</a></p><p class="source-caveat">센서 PAD/주소 선택 세부사항은 예비 데이터시트 공개 배포 권한 확인 후 반영. DVS 18번 RESET과 0x3915 관련 사항은 실물 회로도 및 setfile 확인 필요.</p></div>
 <div class="block closing"><div class="big-decision">다음 행동은 하나입니다.</div><h3>현재 E850의<br>CSI 수신 드라이버부터 확인</h3><p>하드웨어는 2-Lane 연결을 진행할 근거가 있습니다. CSI/PHY BSP가 존재하는지 확인하면 실제 포팅 작업량과 일정이 결정됩니다.</p><div class="step-queue">1. ADB 커널·디바이스 확인<br>2. 22→15 도통 및 I/O 레벨 계측<br>3. GPIO RESET + 2-Lane DVS Driver 적용</div></div></div>
 </div>
-    <div class="slide-foot"><span>사진은 모두 사용자 제공 · 설계/코드는 수정 가능한 강의 및 개발 검토용</span><span>20 / <span class="total-num"></span></span></div>
+    <div class="slide-foot"><span>사진은 모두 사용자 제공 · 설계/코드는 수정 가능한 강의 및 개발 검토용</span><span>21 / <span class="total-num"></span></span></div>
     </div></section></main><div class="progress"></div><div class="overview" id="overview"><button class="overview-close" id="overviewClose">닫기</button><h3>전체 슬라이드</h3><div class="overview-grid"></div></div><script>
 const slides=[...document.querySelectorAll('.slide')];let idx=0,editing=false;
 const stage=document.querySelector('.stage');const progress=document.querySelector('.progress');
