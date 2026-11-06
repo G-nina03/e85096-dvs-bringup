@@ -12,7 +12,8 @@
 
 /*
  * Delta_10_2000FPS (vendor setfile, setfile/Delta_10_2000FPS.txt; verified on RPi5 4-lane)
- * without its last line 0x0100 (read-only on this sensor). Lanes are set in mode change.
+ * without its last line 0x0100 (read-only on this sensor) and with D-PHY PLL M 0x75 for 0x8D (11.29).
+ * Lanes are set in mode change.
  */
 const u32 sensor_s5krc1s_setfile_A_Global[] = {
 	0x300C, 0x00, 0x1,
@@ -29,7 +30,8 @@ const u32 sensor_s5krc1s_setfile_A_Global[] = {
 	0x30A2, 0x11, 0x1, /* DPHY_ENABLE */
 	0x30A3, 0x1F, 0x1, /* DPHY_ENABLE */
 	0x30A5, 0x00, 0x1, /* DPHY_PLL_PMS */
-	0x30A6, 0x8D, 0x1, /* DPHY_PLL_PMS */
+	0x30A6, 0x75, 0x1, /* DPHY_PLL_PMS: vendor 0x8D = a CRC error on every line here; 0x72-0x78 none, 0x7A CRC,
+			    * 0x70/0x7C/0x80 no data (11.29) */
 	0x30A7, 0x00, 0x1, /* DPHY_PLL_PMS */
 	0x303B, 0x40, 0x1, /* TEST PAD_CONTROL */
 	0x3080, 0x3F, 0x1, /* CLOCK_ENABLE ([0] : MULTICLK_ENABLE) */

@@ -11,7 +11,7 @@
 | CPU hotplug | `e850-cpuhp` 모듈로 해결. 30회 + 무작위 300회 시험에서 실패 0 | 11.13 |
 | C2 cpuidle | **보류.** 코어가 C2에서 깨어나지 않는다. 펌웨어 문제로 본다. `cpuidle.off=1` 유지 | 11.12 |
 | 카메라 OV5647 | 55~63 fps(VTS 수정, 캡처 중 printk 끔). **2026-11-06 사용자가 떼어 내고 DVS 센서로 교체했다** | 11.10 |
-| DVS 센서 S5KRC1S | I2C 확인: `i2c-7`(HSI2C2) 주소 0x10, 0x303B 쓰기/읽기 OK. 전원은 `modules/dvs-power`(LDO32 + RSTN GPC0[2]). 매뉴얼에 칩 ID 레지스터 없음, 0x36도 응답(정체 모름). Pablo CIS 드라이버 `modules/s5krc1s-pablo`(OV5647과 같은 ISP 우회) 빌드, boot-dvs로 부팅. 드라이버로 전원·I2C·stream on까지 동작. Delta_10_2000FPS setfile로 **CSIS가 MIPI 프레임을 받는다**(F38/3 s). 하지만 DMA done이 없어 VC0 프레임은 사용자 공간에 0개, stop 시 VRESOL_MISMATCH·OVERFLOW. overflow 패닉은 껐다. 스트림 도중 I2C 쓰기나 insmod를 한 시험에서 soft lockup이 두 번 났다(전원 재투입 필요). 1000 FPS 시도(`to_scnt1`=1999)는 아직 효과를 측정하지 못했다. IRQ 폭주 원인은 CSIS v1.2가 VRESOL 오류 상태를 지우지 않은 것이었다(패치로 수정). devfreq를 최대로 하면 **DVS 이벤트가 사용자 공간에 온다**(`tools/host/dvsdecode.py`로 AER 패킷 확인). 남은 문제: CRC 오류(1499 Mbps 수신 설정에서 줄지만 남음), 매뉴얼에 없는 패킷 type 000000/000101(손상인지 미확정). 캡처는 `dvscap.sh`. 타임스탬프로 잰 실제 프레임 간격은 494 µs(약 2024 fps)라서 1000 FPS 설정은 효과가 없다. 오류 10프레임이면 CSIS를 끄는 vendor 동작을 `fimc_is.e850_csi_err_stop=0`으로 풀었고, **`ov5647-cap.py --live --raw8`로 HDMI에 이벤트 영상(ON 초록/OFF 빨강)을 계속 띄운다**(`is_cis_s5krc1s.flush_us=250`이면 초당 약 11번 갱신, 11.25. to_scnt1은 프레임 주기가 아니라 MIPI flush 타임아웃이라 999로 되돌림) 32줄 모드(mode1)는 System MMU fault 패닉으로 보류(11.26). 디코딩·렌더를 C(`libdvsview.so`)로 옮겨 HDMI **30 fps**, 디코딩 5.2 ms/MB(numpy의 약 45배). 하지만 버퍼에 센서 시간의 약 14%만 들어온다(CRC 시 DMA abort로 추정, 11.27). **11.28: 화면 깜빡임의 세 원인을 고쳤다.** ① CRC 비트가 `error_id`에 쌓여 프레임마다 오류 flush(fimc-is 패치) ② 링크가 워드의 종류 비트 31~26을 지워 SUB 타임스탬프가 256 ms씩 사라짐(디코더가 복구) ③ 커널 볼륨에 남아 있던 EMERG 디버그 printk가 5초마다 CPU0 인터럽트 안에서 UART로 나가 프레임 손실(지움). 지금 live는 초당 68버퍼, 2초 커버리지 93~100%, 지연 21~24 ms, 어두운 프레임 0장(3분). 화면 조정 앱 `http://192.168.0.236:8080/`(인증 없음). CRC 오류는 초당 약 8700개로 그대로다(링크 문제로 추정) | 11.17~11.28 |
+| DVS 센서 S5KRC1S | I2C 확인: `i2c-7`(HSI2C2) 주소 0x10, 0x303B 쓰기/읽기 OK. 전원은 `modules/dvs-power`(LDO32 + RSTN GPC0[2]). 매뉴얼에 칩 ID 레지스터 없음, 0x36도 응답(정체 모름). Pablo CIS 드라이버 `modules/s5krc1s-pablo`(OV5647과 같은 ISP 우회) 빌드, boot-dvs로 부팅. 드라이버로 전원·I2C·stream on까지 동작. Delta_10_2000FPS setfile로 **CSIS가 MIPI 프레임을 받는다**(F38/3 s). 하지만 DMA done이 없어 VC0 프레임은 사용자 공간에 0개, stop 시 VRESOL_MISMATCH·OVERFLOW. overflow 패닉은 껐다. 스트림 도중 I2C 쓰기나 insmod를 한 시험에서 soft lockup이 두 번 났다(전원 재투입 필요). 1000 FPS 시도(`to_scnt1`=1999)는 아직 효과를 측정하지 못했다. IRQ 폭주 원인은 CSIS v1.2가 VRESOL 오류 상태를 지우지 않은 것이었다(패치로 수정). devfreq를 최대로 하면 **DVS 이벤트가 사용자 공간에 온다**(`tools/host/dvsdecode.py`로 AER 패킷 확인). 남은 문제: CRC 오류(1499 Mbps 수신 설정에서 줄지만 남음), 매뉴얼에 없는 패킷 type 000000/000101(손상인지 미확정). 캡처는 `dvscap.sh`. 타임스탬프로 잰 실제 프레임 간격은 494 µs(약 2024 fps)라서 1000 FPS 설정은 효과가 없다. 오류 10프레임이면 CSIS를 끄는 vendor 동작을 `fimc_is.e850_csi_err_stop=0`으로 풀었고, **`ov5647-cap.py --live --raw8`로 HDMI에 이벤트 영상(ON 초록/OFF 빨강)을 계속 띄운다**(`is_cis_s5krc1s.flush_us=250`이면 초당 약 11번 갱신, 11.25. to_scnt1은 프레임 주기가 아니라 MIPI flush 타임아웃이라 999로 되돌림) 32줄 모드(mode1)는 System MMU fault 패닉으로 보류(11.26). 디코딩·렌더를 C(`libdvsview.so`)로 옮겨 HDMI **30 fps**, 디코딩 5.2 ms/MB(numpy의 약 45배). 하지만 버퍼에 센서 시간의 약 14%만 들어온다(CRC 시 DMA abort로 추정, 11.27). **11.28: 화면 깜빡임의 세 원인을 고쳤다.** ① CRC 비트가 `error_id`에 쌓여 프레임마다 오류 flush(fimc-is 패치) ② 링크가 워드의 종류 비트 31~26을 지워 SUB 타임스탬프가 256 ms씩 사라짐(디코더가 복구) ③ 커널 볼륨에 남아 있던 EMERG 디버그 printk가 5초마다 CPU0 인터럽트 안에서 UART로 나가 프레임 손실(지움). 지금 live는 초당 68버퍼, 2초 커버리지 93~100%, 지연 21~24 ms, 어두운 프레임 0장(3분). 화면 조정 앱 `http://192.168.0.236:8080/`(인증 없음). CRC 오류는 초당 약 8700개로 그대로다(링크 문제로 추정). **11.29: CRC 원인은 센서 D-PHY PLL M(0x30A6)이었다.** vendor 0x8D는 줄마다 CRC였고, 0x72~0x78에서는 CRC 0, 깨진 워드 0이다. setfile을 0x75로 바꾸고 재부팅한 뒤 3분 동안 CRC 0개였다(0x70·0x7C·0x80은 데이터 없음, 0x7A는 CRC, 좁은 구간이라 장시간 안정성은 미측정). scan 속도는 `is_cis_s5krc1s.margin`(DTAG_FRM_MARGIN)으로 정한다. 주기는 430 + 32.4 × margin µs이고, 기본 17은 985 µs(1015 fps)다. 디코더가 scan 주기를 직접 잰다. **웹 서비스 `dvslive.service`(부팅 때 시작): `http://192.168.0.236:8080/`**, 미리보기 기본 10 fps(PNG는 C로 만들어 보드 안에서 34 ms), 센서 scan 속도·MIPI flush를 바꾸면 스트림을 다시 시작, 인증 없음 | 11.17~11.29 |
 | HDMI 콘솔 색 | 흰 글씨. dpu.ko 패치로 근본 수정했다(`e850-fbpal`과 rebind는 쓰지 않음). 전원을 껐다 켠 뒤에도 사용자가 화면에서 확인했다 | 11.14~11.16 |
 | HDMI 출력 꺼짐 | 해결. `decon_release()`가 fb0를 닫을 때마다 DECON을 끄던 것을 open 수 세기로 고쳤다(dpu.ko 재빌드) | 11.15 |
 | 네트워크 | Wi-Fi 192.168.0.236(ssh), USB NCM 192.168.7.1 | 11.5 |
@@ -66,7 +66,7 @@
 | 경로 | 변경 |
 |---|---|
 | `boot` 파티션 | **2026-11-06 오후부터 `~/e850-logs/boot-dvs2/boot.img`**(boot-dvs + DT mode1 8192×32, 11.26). 그 전 판은 `boot-dvs`, 복구용 정상 이미지는 `boot-nokvm` |
-| `/lib/modules/.../is-cis-s5krc1s.ko` | 2026-11-06 모드별 줄 수(127/32) 판(01dd3c98…, 11.26). 이전: `/root/is-cis-s5krc1s.ko.mode0only` |
+| `/lib/modules/.../is-cis-s5krc1s.ko` | **2026-11-07 margin·regs param + D-PHY PLL M 0x75(0b35f571…, 11.29)**. 이전: `/root/is-cis-s5krc1s.ko.prev-margin`(1b5c7d77), `.prev-11.28`(01dd3c98, 모드별 줄 수 127/32 판, 11.26), `.mode0only` |
 | `/lib/modules/$(uname -r)/e850-cpuhp.ko` | 추가. `/etc/modules-load.d/e850-cpuhp.conf`로 자동 적재 |
 | `/lib/modules/$(uname -r)/e850-fbpal.ko` | 추가. 11.16부터는 올리지 않는다(파일만 남음) |
 | `/lib/modules/$(uname -r)/is-cis-ov5647.ko` | VTS 수정판으로 교체. 원본은 `/root/is-cis-ov5647.ko.orig` |
@@ -87,7 +87,10 @@
 | `/usr/local/lib/libdvsview.so` | 2026-11-06 SUB 복구·캐시 write-back·1비트 필터·설정 API(42e1bb22…, 11.28). 이전: `.prev-subfix`(bab245d3), `.prev-11.28`(877162f9) |
 | `/usr/local/bin/ov5647-cap.py` | `--ctl`, `--boxes`, cached heap, SYNC ioctl 뺌(ae0fab5c…, 11.28). 저장소와 같은 파일 |
 | `/usr/local/share/dvsview/dvsctl.py`, `dvsctl.html` | 추가(11.28). 화면 조정 앱. 설정은 `/var/lib/dvsview/display.json` |
-| `/usr/local/bin/dvslive.sh` | 추가(11.28). live 시작 스크립트(`tools/board/dvslive.sh`) |
+| `/usr/local/bin/dvslive.sh` | 추가(11.28). live 시작 스크립트(`tools/board/dvslive.sh`). 2026-11-07 foreground로 바꾸고 `sensor.json`의 margin(기본 17)·flush_us를 씀(38b7d03d…, 11.29) |
+| `/etc/systemd/system/dvslive.service` | 추가·enable(11.29, a1252e90…). 부팅 때 live + 8080 페이지, 끝나면 3초 뒤 다시 시작. 센서 설정은 `/var/lib/dvsview/sensor.json` |
+| `/usr/local/lib/libdvsview.so` | 2026-11-07 scan 주기 측정 + `dvs_png`(17f1368f…, 11.29). 이전: `.prev-scan`(42e1bb22) |
+| `/usr/local/share/dvsview/dvsctl.py`, `dvsctl.html` | 2026-11-07 센서 설정, CRC/s, canvas 미리보기(01bebea2…, 275b6bbe…, 11.29) |
 | `/lib/modules/.../is-cis-s5krc1s.ko` | 2026-11-06 to_scnt1 999 복원 + `packets`/`flush_us` param(54365f52…, 11.25). 이전: `/root/is-cis-s5krc1s.ko.1999` |
 | `/etc/sysctl.d/90-e850-autoreboot.conf` | 추가(11.22). `softlockup_panic=1`, `panic=5` |
 | `/root/csis-irqstat.ko` | 추가(11.22). kretprobe IRQ 계수기, 캡처 전에 insmod하고 끝나면 rmmod |
@@ -116,6 +119,6 @@
 
 ## 4. 사용자 결정 대기
 
-- Apache 포트: nginx를 끄고 Apache를 80번에 올릴지, Apache를 8080에서 따로 띄울지. **DVS 화면 조정 앱이 live 중 8080을 쓴다(인증 없음, 11.28).** Apache를 8080에 올리면 앱은 페이지 없이 live만 돈다. `dvslive.sh`의 `CTL_PORT`로 앱 포트를 바꿀 수 있다
+- Apache 포트: nginx를 끄고 Apache를 80번에 올릴지, Apache를 8080에서 따로 띄울지. **DVS 웹 서비스(`dvslive.service`, 11.29)가 부팅 때부터 8080을 쓴다(인증 없음).** Apache를 8080에 올리면 앱은 페이지 없이 live만 돈다. `dvslive.sh`의 `CTL_PORT`로 앱 포트를 바꿀 수 있다
 - 상자 측정과 MySQL 저장: 사용자 지시로 보류(코드는 `--boxes`로만 켜짐)
 - YOLO 모델 종류와 입력 크기

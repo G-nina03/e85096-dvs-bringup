@@ -1938,3 +1938,105 @@ settle 값은 결과에 영향이 없었다.
 | `/usr/local/share/dvsview/dvsctl.py`, `dvsctl.html` | 추가(d7cfc8da…, 34d915da…) |
 | `/usr/local/bin/dvslive.sh` | 추가(c5b1b7e9…) |
 | `/var/lib/dvsview/display.json` | 설정 앱이 만든다. 지금은 기본값 |
+
+### 11.29 CRC 오류의 원인(센서 D-PHY PLL M)과 수정, 1000 fps, 웹 서비스 (2026-11-07)
+
+사용자 요청: "CRC 오류가 초당 약 8700개로, 거의 모든 줄의 데이터가 깨짐 해결해", "1000프레임으로 낮춰", "웹으로 850에 접속해서 화면을 보고 프레임 수와 각종 설정을 할 수 있게".
+
+**바꾼 것.**
+- **CIS 드라이버** (`modules/s5krc1s-pablo/files/.../is-cis-s5krc1s.c`, `-setA.h`):
+  - `is_cis_s5krc1s.margin`(0644): DTAG_FRM_MARGIN(0x321D/0x321E)이다. scan이 끝난 뒤 쉬는 시간을 2^12 event clock 단위로 정한다(매뉴얼 Table 14). 0이면 setfile의 2다.
+  - `is_cis_s5krc1s.regs`(0644): 시험용이다. mode change 맨 끝에 `"30a6=75,30a7=01"`(16진수, 8비트 레지스터) 형식으로 레지스터를 쓴다. 쓴 값은 dmesg에 찍힌다.
+  - setfile의 D-PHY PLL **0x30A6을 0x8D에서 0x75로 바꿨다**(아래 "CRC 원인"). vendor 원본 `setfile/Delta_10_2000FPS.txt`는 그대로 두었다.
+- **libdvsview.so** (`tools/linux510/dvsview.c`):
+  - scan 주기를 직접 잰다. 받아들인 타임스탬프 간격을 10 µs 칸의 히스토그램에 모은다. 통계 주기(2초)마다 가장 많은 칸을 scan 주기로 삼는다.
+  - 데이터 구멍에서 표시 시계가 건너뛰는 폭과 "연속 scan"으로 보는 한계(3 scan)가 이 값을 따른다. 전에는 494 µs로 고정되어 있었다.
+  - 통계에 `scan_us`를 더했다.
+  - `dvs_png()`: 화면을 RGB PNG로 만든다(zlib level 1, C). `dvs_snapshot()` + numpy + Python zlib을 대신한다. 빌드에 `zlib1g-dev`와 `-lz`가 필요하다.
+  - 선택 시험을 더했다: scan 주기 추종, 1 ms scan에서의 구멍, PNG를 다시 풀어 픽셀 확인.
+- **웹 서비스** (`tools/linux510/dvsctl.py`, `dvsctl.html`, `tools/board/dvslive.sh`, `tools/board/dvslive.service`):
+  - `dvslive.service`(systemd, enabled)가 부팅 때 live와 웹 페이지를 띄운다. 프로세스가 끝나면 3초 뒤 다시 띄운다(`Restart=always`).
+  - 주소는 `http://192.168.0.236:8080/`(Wi-Fi), USB로는 `http://192.168.7.1:8080/`이다. **인증이 없다.**
+  - 미리보기는 canvas에 그린다. 한 번에 요청 하나씩, 고른 속도(끔/2/5/10/15 fps, 기본 10)로 받는다. 받은 속도를 화면에 보여 준다.
+  - 통계에 센서 scan 주기(fps)와 CRC 오류/s를 더했다. CRC는 `fimc_is.e850_csi_crc_count`의 증가분이다.
+  - 센서 설정: scan 속도(2000/1500/1000/750/500/250 fps → margin)와 MIPI flush(µs)를 고른다. 적용하면 `/var/lib/dvsview/sensor.json`에 저장한다. 그다음 프로세스가 SIGTERM으로 끝나며 stream off를 한다. 그러면 systemd가 `dvslive.sh`를 다시 띄우고, `dvslive.sh`가 stream on 전에 그 값을 CIS 모듈에 쓴다. 다시 뜨는 데 약 5초 걸린다.
+  - 범위를 벗어나거나 모르는 이름, JSON이 아닌 요청은 400으로 거절하고 재시작하지 않는다(5가지 확인).
+  - `dvslive.sh`는 이제 foreground에서 `exec`로 돈다. 수동으로 띄울 때도 `systemctl restart dvslive`를 쓴다. 기본값은 margin 17(1015 fps), flush 50 µs다.
+
+**scan 속도(측정, 웹 API로 margin만 바꿈, 각 20초).**
+
+| margin | 잰 scan 주기 | scan/s | 버퍼/s | CRC/s | CRC / 줄 |
+|---|---|---|---|---|---|
+| 0 (setfile 2) | 495 µs | 2020 | 68.0 | 8845 | 1.02 |
+| 17 | 985 µs | 1015 | 39.0 | 4759 | 0.96 |
+| 18 | 1015 µs | 985 | 37.5 | 4571 | 0.96 |
+| 48 | 1985 µs | 504 | 19.5 | 2309 | 0.93 |
+
+- scan 주기는 약 430 + 32.4 × margin µs다. 매뉴얼 값(2^12 / 125.6 MHz = 32.6 µs)과 맞는다.
+- 1000 fps에 가장 가까운 margin은 17(985 µs, 1015 fps)과 18(985 fps)이다. 기본값은 17로 했다. 페이지는 고른 fps 이상이 나오는 가장 큰 margin을 고른다.
+- **scan 속도는 CRC의 원인이 아니다.** 데이터시트의 compressed 최대 fixed scan rate(1355 fps, 11.23)보다 낮은 504 fps에서도 줄마다 CRC가 난다.
+
+**CRC 원인 찾기(측정).** CRC/줄은 CRC/s를 (버퍼/s × 127)로 나눈 값이다.
+1. 수신 쪽 deskew 끔(`e850_csi_speed=1499`, settle 자동): 버퍼당 데이터가 약 1 kB이고 coverage 0%다. 쓸 수 없다.
+2. 센서 D-PHY PLL **S=1**(`regs=30a7=01`, 반속으로 추정) + 수신 800:
+   - CRC는 0/s다.
+   - 첫 프레임(스트림 시작 버스트)은 127줄이 모두 차 있다. 깨진 워드(type 000000)는 **0개**다(이벤트 24만, COL 6720).
+   - 그 뒤 프레임은 첫 패킷 하나(1~2줄, 대부분 timestamp 없음)만 들어온다. 프레임은 초당 40~50개 온다.
+   - settle 20/30/50/60을 줘도 같다. 원인은 모른다.
+3. 센서 D-PHY PLL **M**(0x30A6, vendor 0x8D = 141)만 바꿈, 수신은 DT(1600, deskew 켬, settle 8):
+
+| 0x30A6 | CRC/s | 데이터 |
+|---|---|---|
+| 0x68 | 0 | 버퍼 35/s, coverage 100% |
+| 0x70 | 1~6 | 버퍼 0.5/s 이하(데이터 없음), 2번 |
+| 0x72, 0x74, 0x75, 0x76, 0x78 | **0** | 버퍼 29.5~36/s, coverage 99~100%(0x78은 3번) |
+| 0x7A | 5074 | coverage 92%, 원래처럼 줄마다 CRC |
+| 0x7C | 90~146 | 데이터 없음, 2번 |
+| 0x80 | 3~8 | 데이터 없음, 3번 |
+| 0x84, 0x88 | 0 | coverage 99~100% |
+| 0x8D (vendor) | 약 4800(margin 17) | 줄마다 CRC, COL의 약 6%가 깨짐(11.28) |
+
+4. 수신을 1400(deskew 끔, settle 자동 69)으로 바꿔도 0x70 실패, 0x75 CRC 0, 0x7A 줄마다 CRC, 0x7C 실패로 **경계가 같다**.
+   - 그래서 좋은 구간은 수신 설정이 아니라 센서 쪽이 정한다고 본다.
+   - 가설(측정하지 않음): M에 따라 센서 D-PHY PLL의 lock이나 지터가 달라진다. vendor 값 0x8D는 이 센서에서 지터가 큰 쪽에 있다.
+5. 0x75에서 원본 7프레임: COL 192,372, 이벤트 880,385, TS 400, FRAME END 201, **깨진 워드 0개**.
+6. 새 기본값(setfile 0x75, `regs` 비움, 수신 DT)으로 재부팅했다. 부팅 뒤 3분 동안 `e850_csi_crc_count`가 0이다. 버퍼 35/s, 158 kB/버퍼, coverage 99%, 어두운 프레임 0이다.
+
+- 우연히 잰 것: 센서는 원래 속도인데 수신이 800 설정(settle 40)으로 남았을 때 CRC 4855/s, coverage 7~9%였다.
+- **실제 lane 속도는 모른다.** M에 비례한다면 0x75는 원래 값의 83%다. 원래가 1600이면 1328 Mbps, 24 MHz × 141 / 2로 계산한 1692면 1404 Mbps다. DT의 1600은 그대로 두었다. 수신은 1600 설정과 1400 설정 모두에서 CRC 0이었다.
+
+**웹 서비스(측정).**
+- `frame.png`(960×720 RGB):
+  - 보드 안에서 중앙값 34 ms, 최대 50 ms다(18 kB). Wi-Fi로 Mac에서 받으면 62~99 ms다.
+  - 전에는 Python에서 만들어 160~290 ms(89 kB) 걸렸다. 화면 내용이 달라 크기는 바로 비교할 수 없다.
+- live 프로세스의 스레드별 CPU(5초, 웹 접속 없음): 디코딩 23%, 그리기 63%(사용자가 고른 44 fps, 1.5배 확대, 잡음 필터 3 ms), HTTP 0%. 8코어 중 1코어를 다 쓰지 않는다.
+- **코어 2개를 쓰면 좋은가(사용자 질문).**
+  - 이미 2개를 쓴다. 디코딩(Python 주 스레드가 C 함수를 부름, GIL 풀림)과 그리기(C pthread)가 다른 코어에서 동시에 돈다. 웹 요청은 요청마다 다른 스레드가 맡는다.
+  - 그리기 한 장이 14.6 ms(1.5배 확대)라서 한 코어로는 약 68 fps가 한계다. 그보다 빨리 그리려면 그리기를 2스레드로 나눠야 한다. 하지 않았다.
+
+**틀렸던 가정.**
+- 11.28에서 "2-lane 1.6 Gbps, FPC 연결의 신호 품질"로 추정했다. 링크 문제인 것은 맞았다. 하지만 속도를 낮춰서가 아니라 PLL M 값으로 고쳐졌다. 속도가 더 낮은 0x70도 실패하므로 FPC 신호 품질만으로는 설명이 안 된다.
+- 11.23의 "settle 값은 결과에 영향이 없었다"(1499에서 5~14):
+  - 1500 미만에서 PHY 드라이버는 다른 settle clock을 쓴다(`settle_clk_sel=1`). 표 값도 800에서 40, 1400에서 69로 크다.
+  - 반면 1499를 정렬하면 1500이 되어 표에서 7을 받는다.
+  - 그래서 그때 시험한 값은 모두 너무 짧았을 수 있다(가설).
+- scan 주기 494 µs를 디코더에 박아 둔 것: 이제 margin을 바꾸면 달라진다. 그래서 디코더가 직접 잰다.
+
+**남은 것.**
+- 좋은 구간 0x72~0x78은 좁다(가운데에서 ±3%). 온도나 장시간에서도 안정한지는 측정하지 않았다. 지금까지 확인한 것은 재부팅 뒤 3분이다.
+- S=1에서 첫 패킷만 들어오는 원인, 0x70/0x7C/0x80에서 데이터가 없는 원인.
+- flush_us=100에서 화면이 망가진 현상(11.28)을 새 링크에서 다시 보지 않았다.
+- 디코더의 SUB 복구(11.28)는 남겨 두었다. 깨진 워드가 없으면 하는 일이 없다.
+- 8080에는 인증이 없다. Apache 포트 결정(BRINGUP_STATUS 4장)과 겹칠 수 있다.
+
+**보드에 바꾼 것.**
+
+| 경로 | 변경 |
+|---|---|
+| `/lib/modules/$(uname -r)/is-cis-s5krc1s.ko` | 0b35f571…(margin, regs, D-PHY M 0x75). 이전 판은 `/root/is-cis-s5krc1s.ko.prev-margin`(1b5c7d77, M 0x8D + margin/regs), `/root/is-cis-s5krc1s.ko.prev-11.28`(01dd3c98). Mac 사본은 `~/e850-logs/is-cis-s5krc1s-1129b.ko` |
+| `/usr/local/lib/libdvsview.so` | 17f1368f…(scan 주기 측정, `dvs_png`). 이전 판은 `.prev-scan`(42e1bb22) |
+| `/usr/local/share/dvsview/dvsctl.py`, `dvsctl.html` | 01bebea2…, 275b6bbe… |
+| `/usr/local/bin/dvslive.sh` | 38b7d03d…(foreground, sensor.json, margin 17) |
+| `/etc/systemd/system/dvslive.service` | 추가(a1252e90…), `systemctl enable` 함 |
+| `/var/lib/dvsview/sensor.json` | 웹 페이지가 만든다. 지금 `{"margin": 17, "flush_us": 50}` |
+| `/var/lib/dvsview/display.json` | 사용자가 페이지에서 바꾼 값(fps 44, zoom 1, filter_ms 3, margin_ms 0) |

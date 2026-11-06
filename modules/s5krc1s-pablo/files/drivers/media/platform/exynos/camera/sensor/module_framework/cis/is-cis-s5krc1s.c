@@ -43,6 +43,14 @@ static const u16 sensor_s5krc1s_mode_lines[] = { S5KRC1S_BRINGUP_PACKET_COUNT, 3
 static uint flush_us;
 module_param(flush_us, uint, 0644);
 MODULE_PARM_DESC(flush_us, "MIPI FIFO flush timeout 0x3912/13 in us (fine count 0x3911 = 1 us), 1..1023");
+/* scan blank time = DTAG_FRM_MARGIN x 2^12 event clocks (manual Table 14); the setfile's 2 gives a 494 us scan period */
+static uint margin;
+module_param(margin, uint, 0644);
+MODULE_PARM_DESC(margin, "DTAG_FRM_MARGIN 0x321D/E, blank after each scan in 2^12 event clocks, 1..65535 (11.29)");
+/* register tests without a rebuild, written last: "30a7=01,321e=12" (hex, 8-bit registers) */
+static char *regs;
+module_param(regs, charp, 0644);
+MODULE_PARM_DESC(regs, "extra writes at each mode change, \"addr=val,...\" in hex (11.29)");
 
 static int sensor_s5krc1s_write8(struct is_cis *cis, u16 reg, u8 value)
 {
@@ -187,6 +195,9 @@ static int sensor_s5krc1s_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 	struct is_cis *cis;
 	int ret;
 	u32 lines;
+	const char *s;
+	unsigned int a, v;
+	int n;
 
 	FIMC_BUG(!subdev);
 
@@ -225,6 +236,24 @@ static int sensor_s5krc1s_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 		if (ret < 0)
 			return ret;
 	}
+	if (margin >= 1 && margin <= 0xffff) {
+		ret = sensor_s5krc1s_write8(cis, 0x321D, margin >> 8);
+		ret = ret ?: sensor_s5krc1s_write8(cis, 0x321E, margin & 0xff);
+		if (ret < 0)
+			return ret;
+	}
+	/* the lock keeps a sysfs write from freeing the string under us; parsing stops at the first bad entry */
+	kernel_param_lock(THIS_MODULE);
+	s = regs;
+	while (ret >= 0 && s && sscanf(s, "%x=%x%n", &a, &v, &n) == 2 && a <= 0xffff && v <= 0xff) {
+		ret = sensor_s5krc1s_write8(cis, a, v);
+		probe_info("%s: 0x%04x=0x%02x (regs) %d\n", __func__, a, v, ret);
+		s += n;
+		s = *s == ',' ? s + 1 : NULL;
+	}
+	kernel_param_unlock(THIS_MODULE);
+	if (ret < 0)
+		return ret;
 
 	/* Bring-up readback: verify programmed CSI-2 transport registers. */
 	sensor_s5krc1s_cis_log_status(subdev);

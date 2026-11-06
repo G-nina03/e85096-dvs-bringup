@@ -27,9 +27,10 @@
  *   others (frame end, IMU, padding, the undefined 000000/000101 of 11.23) are skipped.
  *
  * Build (Debian 12 arm64, same glibc as the board):
- *   docker run --rm -v "$PWD/tools/linux510:/s" debian:12 sh -c 'apt-get -qq update && apt-get -qq install -y gcc >/dev/null &&
- *     gcc -O2 -Wall -shared -fPIC -o /s/libdvsview.so /s/dvsview.c -lpthread -lm &&
- *     gcc -O2 -Wall -DDVSVIEW_TEST -o /tmp/t /s/dvsview.c -lpthread -lm && /tmp/t [capture.raw]'
+ *   docker run --rm -v "$PWD/tools/linux510:/s" debian:12 sh -c 'apt-get -qq update &&
+ *     apt-get -qq install -y gcc zlib1g-dev >/dev/null &&
+ *     gcc -O2 -Wall -shared -fPIC -o /s/libdvsview.so /s/dvsview.c -lpthread -lm -lz &&
+ *     gcc -O2 -Wall -DDVSVIEW_TEST -o /tmp/t /s/dvsview.c -lpthread -lm -lz && /tmp/t [capture.raw]'
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -45,6 +46,7 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #define XS 960
 #define YS 720
@@ -58,8 +60,9 @@
 #define EV_SUP 0x4000			/* a neighbour fired within filter_ms (set only while the filter is on), */
 #define EV_OFF 0x8000			/* OFF polarity */
 #define BEFORE(a, b) ((int32_t)((a) - (b)) < 0)	/* sensor-time compare on the 32-bit (71 min) clock */
-#define COVER 1500			/* us: timestamps this close are consecutive scans (494 us, 11.24), one or two lost */
-#define SCAN 494			/* us, the scan period (11.24): what the display clock steps over a gap */
+#define SCAN 494			/* us, the scan period of the 2000 fps setfile (11.24) until one is measured */
+#define HBIN 10				/* us per bin of the scan period histogram, */
+#define HBINS 512			/* up to 5.12 ms (CIS margin <= ~140, 11.29) */
 #define LINE 8192			/* bytes per MIPI line, both modes (8192 x 127, 8192 x 32) */
 #define BROW 104			/* bytes per column of a filter bitmap: 722 rows with the border, + an 8-byte read */
 
@@ -97,6 +100,9 @@ static struct {
 	_Atomic int64_t newest;		/* display clock after the last buffer */
 	_Atomic int started;
 	int64_t cov, tot;		/* sensor time with scans back to back (since the last buffer), all of it */
+	/* the scan period follows the CIS margin (11.29): the most common timestamp step, every stats period */
+	uint32_t hist[HBINS];		/* steps taken, HBIN us bins; decode thread counts, render thread clears */
+	_Atomic int scan;		/* us; a step up to 3 scans (one or two lost) is back to back, a gap steps one */
 	/* stats, written by one thread each, read loosely by the render thread */
 	_Atomic uint64_t buffers, ingest_us, ingest_max, bytes, covered;
 	/* frame buffer */
@@ -106,7 +112,7 @@ static struct {
 	uint32_t *back;
 	char stats[2][512];		/* the last stats as JSON, double-buffered for dvs_stats() */
 	_Atomic int stats_cur;
-} S = { .col = -1, .anchor = -1, .zoom = -1 };
+} S = { .col = -1, .anchor = -1, .zoom = -1, .scan = SCAN };
 
 /* display settings: dvs_set() from the dvsctl page (ov5647-cap.py --ctl, 11.28), read by the render thread */
 static struct param {
@@ -176,7 +182,7 @@ static int64_t now_us(void)
 static void timestamp(int64_t raw)
 {
 	int64_t dt = raw - S.raw;
-	int fixed = 0;
+	int fixed = 0, scan;
 
 	if (!S.have_ts) {
 		S.raw = raw;
@@ -202,10 +208,12 @@ static void timestamp(int64_t raw)
 		return;
 	}
 	S.bad = 0;
-	S.t += dt <= COVER ? dt : SCAN;
+	scan = atomic_load_explicit(&S.scan, memory_order_relaxed);
+	S.t += dt <= 3 * scan ? dt : scan;
 	S.tot += dt;
-	S.cov += dt <= COVER ? dt : 0;
+	S.cov += dt <= 3 * scan ? dt : 0;
 	S.raw += dt;
+	S.hist[dt < HBIN * HBINS ? dt / HBIN : 0]++;
 }
 
 /* bits of rows y - 1 .. y + 1 in a column of a filter bitmap (bit y + 1 is row y) */
@@ -724,6 +732,20 @@ static void present(int zoom)
 	}
 }
 
+/* The most common timestamp step since the last call becomes the scan period; render thread, every stats period. */
+static int scan_update(void)
+{
+	int best = 1;
+
+	for (int i = 2; i < HBINS; i++)		/* bin 0: steps under HBIN us and over the histogram */
+		if (S.hist[i] > S.hist[best])
+			best = i;
+	if (S.hist[best] >= 16)
+		atomic_store(&S.scan, best * HBIN + HBIN / 2);
+	memset(S.hist, 0, sizeof(S.hist));
+	return atomic_load(&S.scan);
+}
+
 static void *render(void *arg)
 {
 	uint64_t a = 0, b = 0, m = 0;		/* frame window [a, b), measurement window [m, b) */
@@ -821,15 +843,16 @@ static void *render(void *arg)
 			double fps = frames * 1e6 / dt, draw = frame_sum / 1e3 / frames, events = (double)shown / frames;
 			double bps = nb * 1e6 / dt, ingest = nb ? us / 1e3 / nb : 0, imax = atomic_exchange(&S.ingest_max, 0) / 1e3;
 			double behind = lag / 1e3 / frames, cover = fmin(100, 100.0 * cov / dt);	/* of the real time */
-			int next_stats = !atomic_load(&S.stats_cur);
+			int next_stats = !atomic_load(&S.stats_cur), scan = scan_update();
 
 			fprintf(stderr, "[dvsview] %.1f fps, draw %.1f ms (max %.1f), %.0f events/frame | "
 				"%.1f buffers/s, ingest %.1f ms (max %.1f), %llu kB/buffer | %.0f ms behind the newest "
-				"event | data for %.0f%% of the time | %u dim frames\n", fps, draw, frame_max / 1e3, events, bps,
-				ingest, imax, (unsigned long long)kb, behind, cover, dips);
+				"event | data for %.0f%% of the time | %u dim frames | scan %d us\n", fps, draw, frame_max / 1e3,
+				events, bps, ingest, imax, (unsigned long long)kb, behind, cover, dips, scan);
 			snprintf(S.stats[next_stats], sizeof(S.stats[0]), "{\"fps\":%.1f,\"draw_ms\":%.1f,\"events\":%.0f,"
 				 "\"buffers\":%.1f,\"ingest_ms\":%.1f,\"kb\":%llu,\"behind_ms\":%.0f,\"coverage\":%.0f,"
-				 "\"dips\":%u}", fps, draw, events, bps, ingest, (unsigned long long)kb, behind, cover, dips);
+				 "\"dips\":%u,\"scan_us\":%d}", fps, draw, events, bps, ingest, (unsigned long long)kb, behind,
+				 cover, dips, scan);
 			atomic_store(&S.stats_cur, next_stats);
 			frames = dips = 0;
 			frame_sum = frame_max = shown = lag = 0;
@@ -896,13 +919,46 @@ const char *dvs_stats(void)
 	return *s ? s : "{}";
 }
 
-/* The frame being shown, XS x YS XRGB8888 (before zoom), into dst; returns the bytes copied. */
-int dvs_snapshot(uint8_t *dst, size_t len)
+/* Length and type in front of the n data bytes at p + 8, CRC after them; returns the end of the chunk. */
+static uint8_t *png_chunk(uint8_t *p, const char *type, uint32_t n)
 {
-	if (!S.back || len < XS * YS * 4)
+	uint32_t crc;
+
+	memcpy(p + 4, type, 4);
+	crc = crc32(0, p + 4, n + 4);
+	for (int i = 0; i < 4; i++) {
+		p[i] = n >> (24 - 8 * i);
+		p[8 + n + i] = crc >> (24 - 8 * i);
+	}
+	return p + 12 + n;
+}
+
+/* The frame being shown as an RGB PNG, XS x YS (before zoom), into dst; returns its length. For dvsctl's
+ * /frame.png, which serialises the calls (one static buffer): ~25 ms here, numpy + Python zlib took ~45 (11.29). */
+int dvs_png(uint8_t *dst, size_t len)
+{
+	static const uint8_t ihdr[13] = { 0, 0, XS >> 8, XS & 0xff, 0, 0, YS >> 8, YS & 0xff, 8, 2 };	/* RGB8 */
+	static uint8_t raw[YS * (1 + XS * 3)];
+	uint8_t *r = raw, *p;
+	uLongf n;
+
+	if (!S.back || len < 8 + 25 + 24 + 1024)
 		return -EINVAL;
-	memcpy(dst, S.back, XS * YS * 4);
-	return XS * YS * 4;
+	for (int y = 0; y < YS; y++) {
+		const uint32_t *row = S.back + y * XS;
+
+		*r++ = 0;				/* filter: none */
+		for (int x = 0; x < XS; x++, r += 3)
+			r[0] = row[x] >> 16, r[1] = row[x] >> 8, r[2] = row[x];
+	}
+	memcpy(dst, "\x89PNG\r\n\x1a\n", 8);
+	memcpy(dst + 16, ihdr, sizeof(ihdr));
+	p = png_chunk(dst + 8, "IHDR", sizeof(ihdr));
+	n = len - (p - dst) - 24;			/* room left for the IDAT data, then its CRC and IEND */
+	if (compress2(p + 8, &n, raw, sizeof(raw), Z_BEST_SPEED) != Z_OK)
+		return -ENOSPC;
+	p = png_chunk(p, "IDAT", n);
+	return png_chunk(p, "IEND", 0) - dst;
 }
 
 /* Map fbdev, start drawing fps frames/s on its visible page. */
@@ -950,6 +1006,8 @@ static void reset(void)
 	S.raw = S.t = 0;
 	S.ref = 0;
 	atomic_store(&S.wr, 0);
+	atomic_store(&S.scan, SCAN);
+	memset(S.hist, 0, sizeof(S.hist));
 }
 
 static void feed(const uint32_t *w, size_t n)
@@ -1065,6 +1123,34 @@ int main(int argc, char **argv)
 	feed((const uint32_t[]){ 0x08000054, 0x008001ad }, 2);	/* ref 84 + sub 429 us with its type bits cleared */
 	if (S.t != 2470)
 		return fprintf(stderr, "sub without its type bits: t %lld\n", (long long)S.t), 1;
+	/* 20 scans of 1 ms, then 2 ms: a gap (one 494 us scan) at the 2000 fps period, which then follows the steps */
+	for (int i = 1; i <= 21; i++)
+		feed((const uint32_t[]){ 0x08000054 + i + (i == 21), 0x088001ad }, 2);
+	if (scan_update() != 1005 || S.t != 22964)
+		return fprintf(stderr, "scan period %d us, t %lld\n", atomic_load(&S.scan), (long long)S.t), 1;
+	feed((const uint32_t[]){ 0x0800006f, 0x088001ad }, 2);	/* ref 111: a 5 ms gap, one 1 ms scan on the display */
+	if (S.t != 23969)
+		return fprintf(stderr, "gap at a 1 ms scan: t %lld\n", (long long)S.t), 1;
+	{					/* a black frame with one ON pixel at (1, 2) as a PNG, inflated back */
+		static uint8_t png[XS * YS * 3 + YS + 65536], raw[YS * (1 + XS * 3)];
+		int n, lit = 0;
+		uint32_t zn;
+		uLongf rn = sizeof(raw);
+
+		S.back = calloc(XS * YS, 4);
+		S.back[2 * XS + 1] = ON_RGB;
+		n = dvs_png(png, sizeof(png));
+		zn = png[33] << 24 | png[34] << 16 | png[35] << 8 | png[36];
+		if (n < 0 || memcmp(png, "\x89PNG\r\n\x1a\n", 8) || memcmp(png + 37, "IDAT", 4) || n != 57 + (int)zn ||
+		    memcmp(png + n - 8, "IEND", 4) || uncompress(raw, &rn, png + 41, zn) != Z_OK || rn != sizeof(raw))
+			return fprintf(stderr, "png: %d B, IDAT %u B\n", n, zn), 1;
+		for (size_t i = 0; i < sizeof(raw); i++)
+			lit += raw[i] != 0;
+		if (lit != 1 || raw[2 * (1 + XS * 3) + 1 + 3 + 1] != 0xff)
+			return fprintf(stderr, "png: %d bytes lit\n", lit), 1;
+		free(S.back);
+		S.back = NULL;
+	}
 	if (dvs_set("fade", 128) || PV(P_FADE) != 128 || dvs_set("fade", 999) != -ERANGE || dvs_set("nope", 1) != -ENOENT ||
 	    !strstr(dvs_params(), "\"fade\":{\"v\":128,\"def\":0,\"min\":0,\"max\":250}") || dvs_set("fade", 0))
 		return fprintf(stderr, "settings: %s\n", dvs_params()), 1;

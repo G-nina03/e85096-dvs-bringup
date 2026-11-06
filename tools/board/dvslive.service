@@ -1,0 +1,15 @@
+# S5KRC1S live view on HDMI + settings page on :8080 (dvslive.sh, 11.29).
+# Install: cp dvslive.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now dvslive
+[Unit]
+Description=S5KRC1S DVS live view (HDMI) and web page on :8080
+After=e850-hdmi.service network.target
+
+[Service]
+ExecStart=/usr/local/bin/dvslive.sh
+# also after a sensor setting from the page, which ends the process on purpose
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

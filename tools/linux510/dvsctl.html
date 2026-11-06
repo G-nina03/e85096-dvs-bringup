@@ -12,7 +12,9 @@
   @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
   h1 { font-size: 18px; margin: 0 0 4px; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
-  #view { width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 4px; display: block; object-fit: contain; }
+  #view { width: 100%; height: auto; aspect-ratio: 4 / 3; background: #000; border-radius: 4px; display: block; }
+  h2 { font-size: 15px; margin: 18px 0 2px; color: var(--dim); font-weight: 600; }
+  #s-apply { margin-top: 6px; }
   #stats { color: var(--dim); font: 13px/1.5 ui-monospace, Menlo, monospace; margin-top: 8px; min-height: 3em; }
   .row { display: grid; grid-template-columns: 7.5em 1fr 3.5em; gap: 8px; align-items: center; margin: 10px 0; }
   .row label { color: var(--dim); }
@@ -31,8 +33,11 @@
 <main>
   <section class="panel">
     <h1>DVS 화면 조정</h1>
-    <img id="view" alt="지금 HDMI에 나가는 화면">
-    <div class="toggle"><input type="checkbox" id="live" checked><label for="live">미리보기 갱신 (0.5초마다)</label></div>
+    <canvas id="view" width="960" height="720" aria-label="지금 HDMI에 나가는 화면"></canvas>
+    <div class="toggle"><label for="webfps">미리보기</label>
+      <select id="webfps"><option value="0">끔</option><option value="2">2 fps</option><option value="5">5 fps</option>
+        <option value="10" selected>10 fps</option><option value="15">15 fps</option></select>
+      <span id="webrate"></span></div>
     <div id="stats">통계 기다리는 중…</div>
   </section>
   <section class="panel">
@@ -44,6 +49,14 @@
     </div>
     <div id="controls"></div>
     <div id="msg"></div>
+    <h2>센서 (적용하면 스트림을 다시 시작, 약 5초)</h2>
+    <div class="row"><label for="s-rate">scan 속도</label><select id="s-rate"></select></div>
+    <div class="hint" id="s-rate-hint"></div>
+    <div class="row"><label for="s-flush_us">MIPI flush</label><input type="range" id="s-flush_us" min="1" max="1023" step="1">
+      <output id="o-flush_us"></output></div>
+    <div class="hint">센서 FIFO를 이 시간(µs)마다 내보냄: 짧을수록 버퍼가 잦고 지연이 적음, 기본 50</div>
+    <button id="s-apply">센서 설정 적용</button>
+    <div id="s-msg" class="hint"></div>
   </section>
 </main>
 <script>
@@ -139,37 +152,99 @@ document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
   post(changes);
 });
 
+let lastCrc = null;
 async function refreshStats() {
   try {
-    const s = await (await fetch('/stats')).json();
+    const s = await (await fetch('/stats')).json(), t = performance.now();
+    let crc = '';
+    if (s.crc !== undefined) {
+      if (lastCrc && s.crc >= lastCrc.n) crc = `, CRC 오류 ${Math.round((s.crc - lastCrc.n) * 1000 / (t - lastCrc.t))}/s`;
+      lastCrc = { n: s.crc, t };
+    }
     if (s.fps === undefined) return;
     document.getElementById('stats').textContent =
       `${s.fps} fps, 그리기 ${s.draw_ms} ms, 프레임당 이벤트 ${s.events}\n` +
       `버퍼 ${s.buffers}/s, 복사 ${s.ingest_ms} ms, ${s.kb} kB/버퍼\n` +
-      `최신 이벤트보다 ${s.behind_ms} ms 늦음, 시간의 ${s.coverage}%에 데이터, 어두운 프레임 ${s.dips}장/2초`;
+      `최신 이벤트보다 ${s.behind_ms} ms 늦음, 시간의 ${s.coverage}%에 데이터, 어두운 프레임 ${s.dips}장/2초\n` +
+      `센서 scan ${s.scan_us} µs (${Math.round(1e6 / s.scan_us)} fps)${crc}`;
     document.getElementById('stats').style.whiteSpace = 'pre-line';
   } catch (e) { /* the next poll will tell */ }
 }
 
-const view = document.getElementById('view');
-let loading = false;
-function refreshView() {
-  if (!document.getElementById('live').checked || loading || document.hidden) return;
-  loading = true;
-  const img = new Image();
-  img.onload = () => { view.src = img.src; loading = false; };
-  img.onerror = () => { loading = false; };
-  img.src = '/frame.png?t=' + Date.now();
+// one request at a time, as often as the chosen rate allows; drawn on a canvas so nothing is fetched twice
+const ctx = document.getElementById('view').getContext('2d');
+let shown = 0, rateT = performance.now();
+async function refreshView() {
+  const fps = +document.getElementById('webfps').value, t0 = performance.now();
+  if (fps && !document.hidden) {
+    try {
+      const r = await fetch('/frame.png?t=' + Date.now());
+      if (r.ok) { ctx.drawImage(await createImageBitmap(await r.blob()), 0, 0); shown++; }
+    } catch (e) { /* board restarting: try again */ }
+  }
+  if (t0 - rateT > 2000) {
+    document.getElementById('webrate').textContent = fps ? `받는 중 ${(shown * 1000 / (t0 - rateT)).toFixed(1)} fps` : '';
+    shown = 0; rateT = t0;
+  }
+  setTimeout(refreshView, Math.max(fps ? 1000 / fps - (performance.now() - t0) : 500, 0));
 }
+
+// sensor: scan rate -> CIS margin (DTAG_FRM_MARGIN, 2^12 event clocks each); 0 = the setfile's 2
+const SCAN_BASE = 430, SCAN_LSB = 32.4;	/* us, fitted to margin 2/17/18/48 = 495/985/1015/1985 us (11.29) */
+const RATES = [0, 1500, 1000, 750, 500, 250];
+let sensorCur = {};
+// the largest margin that still gives at least fps scans/s
+function marginFor(fps) { return fps ? Math.max(1, Math.floor((1e6 / fps - SCAN_BASE) / SCAN_LSB)) : 0; }
+function scanFor(m) { return SCAN_BASE + SCAN_LSB * (m || 2); }
+async function loadSensor() {
+  try {
+    sensorCur = await (await fetch('/sensor')).json();
+  } catch (e) { document.getElementById('s-msg').textContent = '센서 설정을 읽을 수 없음'; return false; }
+  const sel = document.getElementById('s-rate'), m = sensorCur.margin.v;
+  sel.textContent = '';
+  for (const fps of RATES) {
+    const mm = marginFor(fps);
+    sel.add(new Option(fps ? `${fps} fps (margin ${mm})` : `약 2000 fps (setfile, margin 2)`, mm));
+  }
+  if (![...sel.options].some(o => +o.value === m)) sel.add(new Option(`margin ${m}`, m));
+  sel.value = m;
+  const fl = document.getElementById('s-flush_us');
+  fl.value = sensorCur.flush_us.v;
+  document.getElementById('o-flush_us').textContent = fl.value + 'µs';
+  rateHint();
+  return true;
+}
+function rateHint() {
+  const m = +document.getElementById('s-rate').value, now = sensorCur.margin ? sensorCur.margin.now : null;
+  document.getElementById('s-rate-hint').textContent =
+    `예상 scan ${Math.round(scanFor(m))} µs` + (now !== null ? `, 센서 모듈에 지금 margin ${now}` : '');
+}
+document.getElementById('s-rate').onchange = rateHint;
+document.getElementById('s-flush_us').oninput = e => { document.getElementById('o-flush_us').textContent = e.target.value + 'µs'; };
+document.getElementById('s-apply').onclick = async () => {
+  const msg = document.getElementById('s-msg');
+  const body = JSON.stringify({ margin: +document.getElementById('s-rate').value,
+                                flush_us: +document.getElementById('s-flush_us').value });
+  try {
+    const r = await fetch('/sensor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    if (!r.ok) { msg.textContent = '적용 안 됨: ' + (await r.text()); return; }
+  } catch (e) { msg.textContent = '보드에 연결할 수 없음: ' + e.message; return; }
+  msg.textContent = '스트림 다시 시작 중…';
+  await new Promise(res => setTimeout(res, 3000));
+  for (let i = 0; i < 30; i++) {
+    if (await loadSensor()) { msg.textContent = '적용됨 (측정한 scan은 위 통계, 2초 뒤 갱신)'; return; }
+    await new Promise(res => setTimeout(res, 1000));
+  }
+  msg.textContent = '30초 안에 돌아오지 않음: 보드를 확인하세요';
+};
 
 (async () => {
   try {
     params = await (await fetch('/params')).json();
     build();
   } catch (e) { show('설정을 읽을 수 없음: ' + e.message); }
-  refreshStats(); refreshView();
+  loadSensor(); refreshStats(); refreshView();
   setInterval(refreshStats, 2000);
-  setInterval(refreshView, 500);
 })();
 </script>
 </body>
