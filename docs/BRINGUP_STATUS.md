@@ -11,7 +11,7 @@
 | CPU hotplug | `e850-cpuhp` 모듈로 해결. 30회 + 무작위 300회 시험에서 실패 0 | 11.13 |
 | C2 cpuidle | **보류.** 코어가 C2에서 깨어나지 않는다. 펌웨어 문제로 본다. `cpuidle.off=1` 유지 | 11.12 |
 | 카메라 OV5647 | 55~63 fps(VTS 수정, 캡처 중 printk 끔). **2026-11-06 사용자가 떼어 내고 DVS 센서로 교체했다** | 11.10 |
-| DVS 센서 S5KRC1S | I2C 확인: `i2c-7`(HSI2C2) 주소 0x10, 0x303B 쓰기/읽기 OK. 전원은 `modules/dvs-power`(LDO32 + RSTN GPC0[2]). 매뉴얼에 칩 ID 레지스터 없음, 0x36도 응답(정체 모름). Pablo CIS 드라이버 `modules/s5krc1s-pablo`(OV5647과 같은 ISP 우회) 빌드, boot-dvs로 부팅. 드라이버로 전원·I2C·stream on까지 동작. Delta_10_2000FPS setfile로 **CSIS가 MIPI 프레임을 받는다**(F38/3 s). 하지만 DMA done이 없어 VC0 프레임은 사용자 공간에 0개, stop 시 VRESOL_MISMATCH·OVERFLOW. overflow 패닉은 껐다. 스트림 도중 I2C 쓰기나 insmod를 한 시험에서 soft lockup이 두 번 났다(전원 재투입 필요). 1000 FPS 시도(`to_scnt1`=1999)는 아직 효과를 측정하지 못했다. IRQ 폭주 원인은 CSIS v1.2가 VRESOL 오류 상태를 지우지 않은 것이었다(패치로 수정). devfreq를 최대로 하면 **DVS 이벤트가 사용자 공간에 온다**(`tools/host/dvsdecode.py`로 AER 패킷 확인). 남은 문제: CRC 오류(1499 Mbps 수신 설정에서 줄지만 남음), 매뉴얼에 없는 패킷 type 000000/000101(손상인지 미확정). 캡처는 `dvscap.sh`. 타임스탬프로 잰 실제 프레임 간격은 494 µs(약 2024 fps)라서 1000 FPS 설정은 효과가 없다. 오류 10프레임이면 CSIS를 끄는 vendor 동작을 `fimc_is.e850_csi_err_stop=0`으로 풀었고, **`ov5647-cap.py --live --raw8`로 HDMI에 이벤트 영상(ON 초록/OFF 빨강)을 계속 띄운다**(`is_cis_s5krc1s.flush_us=250`이면 초당 약 11번 갱신, 11.25. to_scnt1은 프레임 주기가 아니라 MIPI flush 타임아웃이라 999로 되돌림) | 11.17~11.25 |
+| DVS 센서 S5KRC1S | I2C 확인: `i2c-7`(HSI2C2) 주소 0x10, 0x303B 쓰기/읽기 OK. 전원은 `modules/dvs-power`(LDO32 + RSTN GPC0[2]). 매뉴얼에 칩 ID 레지스터 없음, 0x36도 응답(정체 모름). Pablo CIS 드라이버 `modules/s5krc1s-pablo`(OV5647과 같은 ISP 우회) 빌드, boot-dvs로 부팅. 드라이버로 전원·I2C·stream on까지 동작. Delta_10_2000FPS setfile로 **CSIS가 MIPI 프레임을 받는다**(F38/3 s). 하지만 DMA done이 없어 VC0 프레임은 사용자 공간에 0개, stop 시 VRESOL_MISMATCH·OVERFLOW. overflow 패닉은 껐다. 스트림 도중 I2C 쓰기나 insmod를 한 시험에서 soft lockup이 두 번 났다(전원 재투입 필요). 1000 FPS 시도(`to_scnt1`=1999)는 아직 효과를 측정하지 못했다. IRQ 폭주 원인은 CSIS v1.2가 VRESOL 오류 상태를 지우지 않은 것이었다(패치로 수정). devfreq를 최대로 하면 **DVS 이벤트가 사용자 공간에 온다**(`tools/host/dvsdecode.py`로 AER 패킷 확인). 남은 문제: CRC 오류(1499 Mbps 수신 설정에서 줄지만 남음), 매뉴얼에 없는 패킷 type 000000/000101(손상인지 미확정). 캡처는 `dvscap.sh`. 타임스탬프로 잰 실제 프레임 간격은 494 µs(약 2024 fps)라서 1000 FPS 설정은 효과가 없다. 오류 10프레임이면 CSIS를 끄는 vendor 동작을 `fimc_is.e850_csi_err_stop=0`으로 풀었고, **`ov5647-cap.py --live --raw8`로 HDMI에 이벤트 영상(ON 초록/OFF 빨강)을 계속 띄운다**(`is_cis_s5krc1s.flush_us=250`이면 초당 약 11번 갱신, 11.25. to_scnt1은 프레임 주기가 아니라 MIPI flush 타임아웃이라 999로 되돌림) 32줄 모드(mode1)는 System MMU fault 패닉으로 보류(11.26) | 11.17~11.26 |
 | HDMI 콘솔 색 | 흰 글씨. dpu.ko 패치로 근본 수정했다(`e850-fbpal`과 rebind는 쓰지 않음). 전원을 껐다 켠 뒤에도 사용자가 화면에서 확인했다 | 11.14~11.16 |
 | HDMI 출력 꺼짐 | 해결. `decon_release()`가 fb0를 닫을 때마다 DECON을 끄던 것을 open 수 세기로 고쳤다(dpu.ko 재빌드) | 11.15 |
 | 네트워크 | Wi-Fi 192.168.0.236(ssh), USB NCM 192.168.7.1 | 11.5 |
@@ -65,7 +65,8 @@
 
 | 경로 | 변경 |
 |---|---|
-| `boot` 파티션 | **2026-11-06부터 `~/e850-logs/boot-dvs/boot.img`**(저장소 빌드, S5KRC1S 카메라 DT). 복구용 정상 이미지는 `boot-nokvm` |
+| `boot` 파티션 | **2026-11-06 오후부터 `~/e850-logs/boot-dvs2/boot.img`**(boot-dvs + DT mode1 8192×32, 11.26). 그 전 판은 `boot-dvs`, 복구용 정상 이미지는 `boot-nokvm` |
+| `/lib/modules/.../is-cis-s5krc1s.ko` | 2026-11-06 모드별 줄 수(127/32) 판(01dd3c98…, 11.26). 이전: `/root/is-cis-s5krc1s.ko.mode0only` |
 | `/lib/modules/$(uname -r)/e850-cpuhp.ko` | 추가. `/etc/modules-load.d/e850-cpuhp.conf`로 자동 적재 |
 | `/lib/modules/$(uname -r)/e850-fbpal.ko` | 추가. 11.16부터는 올리지 않는다(파일만 남음) |
 | `/lib/modules/$(uname -r)/is-cis-ov5647.ko` | VTS 수정판으로 교체. 원본은 `/root/is-cis-ov5647.ko.orig` |

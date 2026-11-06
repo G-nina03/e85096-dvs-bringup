@@ -90,6 +90,35 @@
 							<3 HW_FORMAT_UNKNOWN 0 0
 							 HW_FORMAT_UNKNOWN VC_NOTHING 0 0>;
 					};
+					/* 32 packets per MIPI frame: a VC0 buffer every ~16 ms in a sparse scene (11.26) */
+					mode1 {
+						common =
+							<8192 32 30
+							 0 0
+							 CSI_DATA_LANES_2
+							 1600
+							 CSI_MODE_VC_ONLY
+							 LRTE_DISABLE
+							 PD_NONE
+							 EX_NONE>;
+
+						vc0 =
+							<0 HW_FORMAT_RAW8 8192 32
+							 HW_FORMAT_RAW8 VC_NOTHING
+							 8192 32>;
+
+						vc1 =
+							<1 HW_FORMAT_UNKNOWN 0 0
+							 HW_FORMAT_UNKNOWN VC_NOTHING 0 0>;
+
+						vc2 =
+							<2 HW_FORMAT_UNKNOWN 0 0
+							 HW_FORMAT_UNKNOWN VC_NOTHING 0 0>;
+
+						vc3 =
+							<3 HW_FORMAT_UNKNOWN 0 0
+							 HW_FORMAT_UNKNOWN VC_NOTHING 0 0>;
+					};
 				};
 			};
 		};

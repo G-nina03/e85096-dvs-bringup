@@ -36,7 +36,10 @@ static const struct v4l2_subdev_ops subdev_ops;
  */
 static uint packets;
 module_param(packets, uint, 0644);
-MODULE_PARM_DESC(packets, "MIPI_NUM_OF_PACKETS 0x391A/B per frame, 1..127 (VC0 buffer is 127 lines)");
+MODULE_PARM_DESC(packets, "MIPI_NUM_OF_PACKETS 0x391A/B per frame, 1..127; CSIS needs it = the DT mode height (11.25)");
+
+/* MIPI packets per frame = VC0 lines of each DT mode (module_s5krc1s.dtsi mode0, mode1); one setfile for all */
+static const u16 sensor_s5krc1s_mode_lines[] = { S5KRC1S_BRINGUP_PACKET_COUNT, 32 };
 static uint flush_us;
 module_param(flush_us, uint, 0644);
 MODULE_PARM_DESC(flush_us, "MIPI FIFO flush timeout 0x3912/13 in us (fine count 0x3911 = 1 us), 1..1023");
@@ -183,6 +186,7 @@ static int sensor_s5krc1s_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 {
 	struct is_cis *cis;
 	int ret;
+	u32 lines;
 
 	FIMC_BUG(!subdev);
 
@@ -190,7 +194,7 @@ static int sensor_s5krc1s_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 	FIMC_BUG(!cis);
 	FIMC_BUG(!cis->cis_data);
 
-	if (mode >= ARRAY_SIZE(sensor_s5krc1s_setfiles_A))
+	if (mode >= ARRAY_SIZE(sensor_s5krc1s_mode_lines))
 		return -EINVAL;
 
 	ret = sensor_s5krc1s_write8(cis,
@@ -201,8 +205,8 @@ static int sensor_s5krc1s_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 
 	ret = sensor_cis_set_registers(
 		subdev,
-		sensor_s5krc1s_setfiles_A[mode],
-		sensor_s5krc1s_setfile_A_sizes[mode]);
+		sensor_s5krc1s_setfiles_A[0],
+		sensor_s5krc1s_setfile_A_sizes[0]);
 	if (ret < 0)
 		return ret;
 
@@ -210,12 +214,11 @@ static int sensor_s5krc1s_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 	if (ret < 0)
 		return ret;
 
-	if (packets >= 1 && packets <= S5KRC1S_BRINGUP_PACKET_COUNT) {
-		ret = sensor_s5krc1s_write8(cis, 0x391A, packets & 0xff);
-		ret = ret ?: sensor_s5krc1s_write8(cis, 0x391B, packets >> 8);
-		if (ret < 0)
-			return ret;
-	}
+	lines = packets >= 1 && packets <= S5KRC1S_BRINGUP_PACKET_COUNT ? packets : sensor_s5krc1s_mode_lines[mode];
+	ret = sensor_s5krc1s_write8(cis, 0x391A, lines & 0xff);
+	ret = ret ?: sensor_s5krc1s_write8(cis, 0x391B, lines >> 8);
+	if (ret < 0)
+		return ret;
 	if (flush_us >= 1 && flush_us <= 1023) {
 		ret = sensor_s5krc1s_write8(cis, 0x3912, flush_us & 0xff);
 		ret = ret ?: sensor_s5krc1s_write8(cis, 0x3913, flush_us >> 8);
@@ -227,10 +230,10 @@ static int sensor_s5krc1s_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 	sensor_s5krc1s_cis_log_status(subdev);
 
 	cis->cis_data->cur_width = 8192;
-	cis->cis_data->cur_height = S5KRC1S_BRINGUP_PACKET_COUNT;
+	cis->cis_data->cur_height = sensor_s5krc1s_mode_lines[mode];
 
-	probe_info("%s: mode %u, RAW8 8192x%d transport\n",
-		   __func__, mode, S5KRC1S_BRINGUP_PACKET_COUNT);
+	probe_info("%s: mode %u, RAW8 8192x%u transport, %u packets\n",
+		   __func__, mode, sensor_s5krc1s_mode_lines[mode], lines);
 
 	return 0;
 }
