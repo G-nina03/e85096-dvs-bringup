@@ -2273,14 +2273,15 @@ settle 값은 결과에 영향이 없었다.
   - `e850-wifi.service`가 모듈을 직접 올린다. scsc 모듈은 `/etc/modprobe.d/e850-blacklist.conf`에 있어 자동으로는 올라오지 않는다.
   - 보드에 넣었다(md5 `47489536…`, 저장소와 같음). 이전 판은 `/root/e850-wifi.sh.prev-recovery`(7d4af31c…)다.
 - 07:34 KST에 재부팅했다. 부팅 직후 `disable_recovery_handling`은 `0`이었다. `e850-wifi`, `dvslive`, `wpa_supplicant@wlan0`은 active, 8080은 200이었다.
-- 부팅 설정만으로 강제 패닉 시험: **아직 못 했다.** ACM이 없어서(아래), 복구에 실패하면 보드에 닿을 길이 없었다. 변수는 런타임 시험과 같다.
+- 07:57 KST에 사용자가 다시 재부팅했다(ACM 정상). 부팅 설정만으로 강제 패닉(07:58:53): 끊김 +0.18 s, `wlan0` COMPLETED +6.47 s(2.4 GHz), 8080 첫 응답 끝 +7.31 s. `mx_recovery_count` 1. **복구된다.**
 
 **재부팅 뒤 ACM 콘솔이 안 올라옴(관찰, Wi-Fi와 무관).**
 - 07:34 재부팅 뒤 Mac에 `/dev/cu.usbmodeme850_961`이 없었다. 보드 UDC 상태는 `not attached`였다.
 - UART 로그(이 부팅 5.905 s)에 `dwc3_otg_start_gadget does not have any gadget`가 2번 찍혔다. `e850-vbus`가 VBUS를 알린 시점에 gadget이 아직 컨트롤러에 붙지 않은 것이다.
   - 앞 부팅은 pullup → VBUS → `start_gadget`(타이머 시작) 순서였고 정상이었다.
   - 그 뒤 다시 시도하는 곳이 없다. VBUS는 하드웨어가 아니라 `e850-vbus.ko`가 한 번 알리는 것이라 케이블을 다시 꽂아도 소용없다.
-- root로 `rmmod e850_vbus; modprobe e850-vbus`하면 될 것으로 본다(시험 못 함). philip은 sudo 비밀번호가 없어서 할 수 없었다.
+- root로 `rmmod e850_vbus; modprobe e850-vbus`하면 VBUS를 다시 알려 붙을 것으로 본다. **시험하지 못했다.** sudo로 하려던 순간 사용자가 재부팅했다.
+- 07:57 재부팅에서는 ACM이 정상으로 올라왔다. 경합은 가끔 난다.
 
 **남은 것.**
 - 다음 실제 패닉(0x04)에서 복구되는지는 아직 못 봤다. 경로는 강제 패닉과 같다(IRQ 126 → `panicmon_isr`).
@@ -2297,8 +2298,9 @@ settle 값은 결과에 영향이 없었다.
 | `/usr/local/bin/e850-wifi.sh` | `modprobe scsc_mx disable_recovery_handling=0`(47489536…). 이전: `/root/e850-wifi.sh.prev-recovery` |
 | `/sys/module/scsc_mx/parameters/disable_recovery_handling` | 07:14 런타임으로 0(재부팅 전까지), 07:34부터 부팅 때 0 |
 | Wi-Fi 펌웨어 | 강제 패닉 4번(07:14~07:19), 모두 복구 |
-| 재부팅 1번 | 07:34 KST(부팅 설정 확인) |
+| 재부팅 2번 | 07:34 KST(부팅 설정 확인, ACM 안 올라옴), 07:57 KST(사용자, ACM 복구) |
+| Wi-Fi 펌웨어(부팅 뒤) | 07:58:53 강제 패닉 1번, 복구 |
 | `/var/tmp/wifirec/` | `statelog.sh`, `roamloop.sh`, `blob`(3.5 MB), 상태·roam 기록, journal 발췌 |
 | `/var/tmp/panic0634-full.txt` | 06:34 패닉 전후 journal(카메라 경고 뺌) |
 
-Mac: `~/e850-logs/wifi/`(`panic0634-full.txt`, `rec1/`: `web.log`, `state.log`, `t0.txt`, `tx.log`, `roam.log`, `journal*.txt`).
+Mac: `~/e850-logs/wifi/`(`panic0634-full.txt`, `rec1/`: `web.log`, `state.log`, `t0.txt`, `tx.log`, `roam.log`, `journal*.txt`, 부팅 뒤 시험은 `web3.log`, `state3.log`).
