@@ -24,6 +24,7 @@ WinLink E850-96(Samsung Exynos850 = s5e3830, Cortex-A55 8코어)에 vendor Linux
 | 지금 구워진 boot | `~/e850-logs/boot-dvs2/boot.img` = 저장소 빌드, CN4 카메라 DT를 S5KRC1S로, mode0 8192×127 + mode1 8192×32(2026-11-06, 11.18/11.26). 그 전 판 `boot-dvs`. 알려진 정상 이미지는 `~/e850-logs/boot-nokvm/boot.img`(OV5647 DT, 1시간 부하 시험 통과) |
 | 자동 적재 모듈 | `e850-cpuhp`(hotplug, `/etc/modules-load.d`), HDMI 콘솔 색은 dpu.ko 패치(`modules/e850-hdmi/apply.sh`, 11.16). `e850-fbpal`은 더 이상 올리지 않는다 |
 | 수동 적재 | 카메라 `modprobe fimc-is && modprobe is-cis-ov5647`. `fimc_is`는 내리면 다시 올릴 수 없어 재부팅해야 한다 |
+| CPU 배치 | 장치 IRQ는 모두 CPU0. CPU7은 DVS 웹 페이지(`dvs-web` 스레드) 전용이다. systemd가 띄우는 것은 모두 CPU0~6(`/etc/systemd/system.conf.d/e850-cpu7.conf`, 11.30) |
 
 ### 접속
 
@@ -86,6 +87,9 @@ docker run --rm --privileged -v e850-out:/o:ro -v "$PWD/tools/linux510:/t:ro" -v
 - **카메라:** `ov5647-cap.py`는 실행하는 동안 콘솔 printk를 끈다. 프레임마다 나오는 커널 메시지가 UART로 나가면 CSIS 인터럽트를 놓치기 때문이다.
 - **USB 호스트:** 꺼져 있어서 키보드·마우스가 없다. 데스크톱 환경은 보류했다(GPU 사용자 공간 드라이버 없음).
 - **포트:** nginx가 80번 포트를 쓴다. Apache를 올리기 전에 사용자와 포트를 정한다.
+- **Wi-Fi:** 펌웨어가 패닉하면(`WLBT FW PANIC`) 재부팅할 때까지 Wi-Fi가 없다. 자동 복구가 꺼져 있다(11.30). 그때는 ACM 콘솔로 작업한다.
+- **보드 `/tmp`:** 부팅 때 비워진다. 남길 파일은 `/var/tmp`에 둔다.
+- **`pgrep -f 'ov5647-cap.py --live'`:** ssh로 보낸 명령 줄 자신도 잡는다. live PID는 `systemctl show -p MainPID --value dvslive`로 얻는다.
 
 ## 로그와 백업 위치 (Mac)
 

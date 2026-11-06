@@ -1,6 +1,7 @@
 """Display settings page for the S5KRC1S live view: ov5647-cap.py --live --raw8 --ctl PORT (11.28).
 
-Runs in the capture process (libdvsview's settings live there), one daemon thread:
+Runs in the capture process (libdvsview's settings live there), one daemon thread and its HTTP/1.1 connection
+threads, all on CPU7 at the top clock (pin(), 11.30):
   GET  /           dvsctl.html
   GET  /params     settings with default and range, JSON (dvs_params())
   POST /params     {"name": int, ...}: apply (dvs_set) and save to SAVED for the next start
@@ -16,6 +17,8 @@ import http.server
 import json
 import os
 import signal
+import struct
+import sys
 import threading
 
 SAVED = '/var/lib/dvsview/display.json'
@@ -26,6 +29,24 @@ CIS = '/sys/module/is_cis_s5krc1s/parameters/'
 CRC = '/sys/module/fimc_is/parameters/e850_csi_crc_count'
 # name: (min, max, default) as in dvslive.sh: margin 17 = a 985 us scan (0 = the setfile's 2, 495 us), flush 50 us
 SENSOR_RANGE = {'margin': (0, 140, 17), 'flush_us': (1, 1023, 50)}
+# the page's own core (11.30): no device IRQ (they all land on CPU0), systemd keeps the rest on 0-6 (e850-cpu7.conf)
+WEB_CPU = 7
+
+
+def pin(cpu):
+    """This thread and the request threads it starts (they inherit all three): CPU cpu only, at the cluster's top
+    clock while one runs (an idle cluster sits at 546 MHz and a 25 ms request is over before schedutil raises it:
+    pinned without this a frame took 80 ms, with it 27; 11.30), named dvs-web."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl(15, b'dvs-web', 0, 0, 0)                                     # PR_SET_NAME
+    # struct sched_attr: size 56, SCHED_FLAG_KEEP_POLICY | KEEP_PARAMS | UTIL_CLAMP_MIN, util_min 1024
+    attr = struct.pack('IIQiIQQQII', 56, 0, 0x08 | 0x10 | 0x20, 0, 0, 0, 0, 0, 1024, 1024)
+    if libc.syscall(ctypes.c_long(274), ctypes.c_long(0), attr, ctypes.c_long(0)):    # __NR_sched_setattr (arm64)
+        print('dvsctl: uclamp: %s' % os.strerror(ctypes.get_errno()), file=sys.stderr)
+    try:
+        os.sched_setaffinity(0, {cpu})
+    except OSError as e:                    # CPU offline (hotplug): stay on the shared cores
+        print('dvsctl: CPU%d: %s' % (cpu, e), file=sys.stderr)
 
 
 def save(path, obj):
@@ -67,11 +88,17 @@ def start(lib, port):
             return json.loads(lib.dvs_params())
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'       # keep-alive: no TCP connect per frame over Wi-Fi (11.30)
+        disable_nagle_algorithm = True      # the body goes out right after the headers, not after their ACK
+        timeout = 30                        # an idle connection (a browser's preconnect) holds a thread
+
         def send(self, body, ctype='application/json', code=200):
             self.send_response(code)
             self.send_header('Content-Type', ctype)
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
+            if code >= 400:                 # a refused request's body may be unread: don't parse it as the next one
+                self.send_header('Connection', 'close')
             self.end_headers()
             self.wfile.write(body)
 
@@ -130,7 +157,11 @@ def start(lib, port):
         def log_message(self, *args):
             pass
 
+    def serve():
+        pin(WEB_CPU)
+        srv.serve_forever()
+
     srv = http.server.ThreadingHTTPServer(('', port), Handler)
     srv.daemon_threads = True
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=serve, daemon=True).start()
     return srv

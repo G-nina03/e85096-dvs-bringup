@@ -2040,3 +2040,143 @@ settle 값은 결과에 영향이 없었다.
 | `/etc/systemd/system/dvslive.service` | 추가(a1252e90…), `systemctl enable` 함 |
 | `/var/lib/dvsview/sensor.json` | 웹 페이지가 만든다. 지금 `{"margin": 17, "flush_us": 50}` |
 | `/var/lib/dvsview/display.json` | 사용자가 페이지에서 바꾼 값(fps 44, zoom 1, filter_ms 3, margin_ms 0) |
+
+### 11.30 코어 8개 사용 지도, 웹 전용 코어(CPU7), Wi-Fi 웹 응답 104~113 → 28~40 ms, Wi-Fi 펌웨어 패닉 (2026-11-07)
+
+사용자 요청: "cpu 8개 사용 영역을 알려줘, 그리고 웹 서비스를 위해 하나 할당해서 더 빠른 서비스를 제공해".
+
+**측정 방법.**
+- `tools/board/cpumap-cap.sh`(root)가 ftrace로 5초 동안 기록한다.
+  - 이벤트: `sched_switch`, `irq_handler_entry/exit`, `softirq_entry/exit`. `record-tgid`도 켠다.
+  - 앞뒤로 `/proc/stat`, `/proc/interrupts`, cpufreq `time_in_state`를 찍는다.
+  - trace 버퍼는 CPU마다 8 MB다. 결과는 `/tmp/cpumap*`에 둔다.
+- `tools/host/cpumap.py`(Mac)는 코어마다 두 이벤트 사이의 시간을 그때 돌던 태스크(또는 hardirq, softirq)에 붙인다. 끝난 live 프로세스 스레드는 웹 연결 스레드로 묶는다. 짧게 사는 스레드는 그것뿐이다.
+- 웹 응답은 `tools/host/webbench.py`로 잰다.
+  - `/frame.png`를 차례로 받는다.
+  - 요청마다 새로 연결하거나(urllib), 연결 하나를 재사용한다(`keep`, 브라우저와 같다).
+- 바꾸기 전 지도를 잴 때의 웹 부하:
+  - Mac 측정기가 초당 10장을 받았다.
+  - 사용자도 같은 Mac(192.168.0.246)의 브라우저로 초당 10장을 보고 있었다.
+  - trace에서 frame 크기의 연결 스레드가 5초에 100개였다.
+
+**바꾸기 전 지도(5초, frame 요청 초당 20개).**
+
+| CPU | 사용률 | 내용 |
+|---|---|---|
+| 0 | 34% | 장치 IRQ 전부(Wi-Fi `scsc_wlbt` 245/s, 타이머 238/s, DSIM 122/s, CSI 107/s), NET_RX softirq 3%, 웹 연결 스레드 19% |
+| 1~3 | 33~43% | 그리기 스레드(합 68%), 캡처·디코드(main, 합 15%), 웹 연결 스레드(합 25%) |
+| 4 | 7% | 그리기 3.6% |
+| 5~7 | 0~2% | 거의 쉼 |
+
+- 0~3번 클러스터는 평균 1956 MHz, 4~7번은 558 MHz(대부분 546)였다. 스케줄러가 일을 0~3번에 모은다.
+- live 프로세스는 다음과 같이 썼다.
+  - 그리기: 73%(사용자 설정 76 fps)
+  - main: 18.5%
+  - 웹 연결 스레드: 합 46%(요청마다 새 연결과 새 스레드, HTTP/1.0)
+  - 나머지는 journald 4%, 커널(타이머 IRQ, NET_RX 등) 수 %다. 8코어 중 약 1.5코어를 썼다(`/proc/stat` busy 합 154%).
+- frame 요청 하나는 CPU를 23 ms(중앙값) 쓴다.
+  - 그중 zlib level 1 압축이 13.3 ms다. 12 kB PNG 프레임으로 같은 zlib를 써서 따로 쟀다.
+  - 나머지는 RGB 변환, Python, HTTP다.
+
+**Wi-Fi로 받을 때(바꾸기 전, curl 25번 중앙값).**
+- 연결에 24 ms, 연결 뒤 첫 바이트에 39 ms(서버 약 30 ms + 왕복 1번), 본문에 35 ms(23 kB)가 걸렸다.
+- ping 왕복은 평균 7.4 ms였다. 링크 송신 속도는 39 Mbit/s(MCS 4), 신호는 −66 dBm였다.
+- 23 kB에 35 ms는 대역폭으로 설명되지 않는다.
+
+**CPU7 고정 시험(바꾸기 전 코드, 보드 안 localhost 100번씩).** `taskset`/`uclampset`을 웹 accept 스레드에 걸었다. 새 연결 스레드가 이 설정을 물려받는다.
+
+| 상태 | 중앙값 | p90 | 최대 | 초당 |
+|---|---|---|---|---|
+| 공유 코어(원래) | 34~38 ms | 58 ms | 97 ms | 25~27 |
+| CPU7만 | 77~80 ms | 107~108 ms | 112~114 ms | 12.4~12.7 |
+| CPU7 + uclamp.min 1024 | 27 ms | 40~41 ms | 45~47 ms | 32.5 |
+
+- **CPU7만 주면 두 배 느려진다.** 4~7번 클러스터가 쉬고 있어서 546 MHz다. 25 ms짜리 요청은 schedutil이 주파수를 올리기 전에 끝난다.
+- uclamp.min 1024는 "이 스레드가 돌 때는 최고 클럭"이라는 요청이다. 스레드가 쉬는 동안에는 주파수를 붙잡지 않는다.
+
+**바꾼 것.**
+- `tools/linux510/dvsctl.py`:
+  - `pin()`: 웹 accept 스레드가 시작할 때 세 가지를 한다. CPU7에 고정한다(`sched_setaffinity`). uclamp.min 1024를 건다(`sched_setattr`, arm64 syscall 274). 이름을 `dvs-web`으로 바꾼다(`prctl`). 연결 스레드는 셋 다 물려받는다.
+  - CPU7이 꺼져 있으면(hotplug) 공유 코어에 남고 stderr에 남긴다.
+  - HTTP/1.1 keep-alive(`protocol_version`)를 켰다.
+  - `TCP_NODELAY`(`disable_nagle_algorithm`)를 켰다. 헤더 뒤 본문이 ACK를 기다리지 않는다.
+  - 쉬는 연결은 30초 뒤 끊는다(`timeout`). 브라우저가 미리 열어 둔 연결이 스레드를 계속 붙잡지 않게 한다.
+  - 오류 응답(400, 404, 503) 뒤에는 연결을 닫는다. 읽지 않은 요청 본문이 다음 요청으로 읽히지 않게 한다. POST `/nope`(404)와 JSON이 아닌 POST `/params`(400)는 닫고, 한 연결로 GET 5번(`/stats`, `/frame.png`, `/params`, `/sensor`, `/frame.png`)이 이어지는 것을 확인했다.
+- `tools/board/e850-cpu7.conf` → `/etc/systemd/system.conf.d/`: `CPUAffinity=0-6`.
+  - systemd가 띄우는 모든 프로세스가 CPU0~6에 있다. 서비스, ssh 로그인, live 프로세스의 그리기·캡처 스레드가 모두 여기에 든다.
+  - 재부팅해야 적용된다.
+- `tools/linux510/dvsctl.html`: 미리보기에 20/30 fps를 더했다(기본 10 그대로).
+- Wi-Fi 절전은 바꾸지 않았다(아래).
+
+**결과(측정).**
+
+| Mac에서 Wi-Fi로 | 중앙값 | p90 | 초당(연달아) |
+|---|---|---|---|
+| 전, 요청마다 새 연결 | 104~113 ms | 186~1098 ms | 2.2~8.2 |
+| 후, 요청마다 새 연결 | 41 ms | 48 ms | 23.8 |
+| 후, 연결 재사용(브라우저와 같음) | 28~30 ms | 32~37 ms | 31~34 |
+| 후, 연결 재사용, 링크 MCS 2(19.5 Mbit/s, −69 dBm) + 브라우저 동시 접속 | 40 ms | 56~62 ms | 23~24 |
+
+- 보드 안(localhost, 서버 시간):
+  - 전: 중앙값 29~38 ms, p90 51~60 ms.
+  - 후, 혼자: 25.6 ms, p90 27 ms(새 연결).
+  - 후, 브라우저와 동시: 18.3 ms, p90 34 ms(연결 재사용).
+- 새 연결끼리 비교하면 104~113 ms가 41 ms로 줄었다.
+  - 서버 시간은 약 8~12 ms 줄었다(CPU7 + uclamp).
+  - 나머지 약 55 ms는 NODELAY의 몫으로 본다. 전에는 본문 꼬리가 ACK를 기다렸다(Nagle). 이 몫은 따로 재지 않은 추정이다.
+- 연결을 재사용하면 41 ms가 28~30 ms로 더 줄어든다.
+- 바꾼 뒤 지도(재부팅 뒤 1분 반, Mac 측정기가 연결 재사용으로 초당 10장, 5초):
+
+| CPU | 사용률 | 내용 |
+|---|---|---|
+| 0 | 3.8% | 장치 IRQ(타이머 171/s, DSIM 121/s, CSI 107/s, Wi-Fi), cpufreq 스레드, journald |
+| 1 | 77.6% | 그리기 75.9%(사용자 설정 104 fps) |
+| 2 | 1.4% | journald, watchdog |
+| 3 | 13.2% | 캡처·디코드(main) |
+| 4~6 | 0~0.4% | 쉼 |
+| 7 | 17.2% | **`dvs-web` 17.5%**(frame 요청 하나에 17.5 ms), 그 밖에는 타이머 IRQ와 IPI 0.4% |
+
+- 4~7번 클러스터는 평균 1400 MHz(대부분 2002)였다. 웹이 돌 때만 올라간다.
+- 한 코어로 처리할 수 있는 frame 요청은 초당 약 40~55개다(요청당 18~25 ms).
+  - 여러 브라우저가 30 fps로 보면 CPU7이 다 찬다.
+  - 그래도 그리기와 캡처는 다른 코어에 있어서 영향을 받지 않는다.
+- 30 fps를 고르면 링크가 좋을 때(MCS 4) 약 30장, 나쁠 때(MCS 2) 약 20장을 받는다. 페이지가 받은 속도를 보여 준다.
+
+**시험했지만 넣지 않은 것.**
+- Wi-Fi 절전 끔(`iw dev wlan0 set power_save off`): 연결 재사용 중앙값이 29.2~29.5 ms였다(켬 28.4~28.8). p90도 비슷하다. 이득이 없어서 다시 켰다.
+- zlib `Z_RLE`(같은 프레임): 11.8 ms에 4.7 kB다. 지금 level 1은 13.3 ms에 12.1 kB다. 크기는 2.5배 작지만 11%만 빨라서 넣지 않았다.
+
+**Wi-Fi 펌웨어 패닉(관찰, 2번).**
+1. 2026-11-06 18:58:29 UTC(03:58 KST, 부팅 후 약 2시간 37분)부터:
+   - wpa_supplicant가 1초마다 `CTRL-EVENT-SCAN-FAILED ret=-5`를 냈다.
+   - `wpa_state=DISCONNECTED`, scan 결과 0개였다. 드라이버는 `slsi_net_open: Fail: called when MLME in blocked state`를 냈다.
+   - 05:49 KST에 발견할 때까지 2시간 넘게 그대로였다.
+   - 그 앞 30분 동안 Wi-Fi 로그는 없다. 커널 링 버퍼는 이미 덮였다.
+   - `ip link set wlan0 down/up`은 EIO로 실패했고, 재부팅으로 살렸다.
+2. 21:34:10 UTC(06:34 KST, 재부팅 뒤 6분):
+   - `platform_wdog_isr: INT received 126`(WLBT watchdog) → `mxman_fail: WLBT FW failure 0x0` → `WLBT FW PANIC: 0x04`, `Reason: 'panicmon_isr'`, `Auto-recovery: off` 순서로 나왔다.
+   - 그 순간 Mac이 scp로 3.5 MB를 받기 시작했다. 앞선 같은 크기의 scp 두 번은 괜찮았다.
+   - ftrace 수집은 4분 반 전에 끝났다.
+   - 로그는 보드 `/var/tmp/wifi-panic-0634.txt`에 있다.
+- `scsc_mx.disable_recovery_handling=1`이다. 그래서 펌웨어가 패닉하면 재부팅할 때까지 Wi-Fi가 없다.
+- 커널 로그가 초당 약 130줄이다. 대부분 카메라 경고다(`is_video_poll is fail(65)`, `output(0x2) is NOT completed`, `dvfs table is NOT selected`, `is_group_shot`/`tasklet_csis_str_otf: N callbacks suppressed`). 그래서 링 버퍼가 몇 분 만에 덮이고, journal이 288 MB다.
+- 원인은 모른다. 가설(측정 안 함): 신호가 −66~−69 dBm이고, 펌웨어가 roaming scan을 한다(지난 부팅 로그에 `ROAM_SCAN_STARTED`, RSSI −67, threshold −75). 큰 송신 중에 펌웨어가 멈출 수 있다.
+
+**남은 것.**
+- Wi-Fi 안정화(다음 세션).
+  - 자동 복구(`disable_recovery_handling=0`) 시험은 커널이 멈출 수 있어서 사용자가 있을 때 한다.
+  - 재현 조건(큰 송신, roaming)을 찾는다.
+- 카메라 경고 로그가 초당 130줄 나온다.
+- watchdog 데몬(initramfs가 띄움)은 CPU7도 쓸 수 있다(0.4%). 커널 unbound kworker도 CPU7에 올 수 있다(지도에서 0.1% 미만).
+- 보드의 `/tmp`는 부팅 때 비워진다. 남길 측정 파일은 `/var/tmp`에 둔다.
+- 8080에는 여전히 인증이 없다.
+
+**보드에 바꾼 것.**
+
+| 경로 | 변경 |
+|---|---|
+| `/usr/local/share/dvsview/dvsctl.py`, `dvsctl.html` | b53fd0b9…(pin, keep-alive, NODELAY, timeout, 오류 뒤 연결 닫음), 5171b486…(20/30 fps) |
+| `/etc/systemd/system.conf.d/e850-cpu7.conf` | 추가(39e8c1a4…), `CPUAffinity=0-6` |
+| 재부팅 3번 | 06:02(Wi-Fi 복구), 06:28(CPU7 설정 확인), 06:39(Wi-Fi 패닉 복구) KST |
+| Wi-Fi 절전 | 시험으로 껐다가 다시 켰다(바뀐 것 없음) |
+| `/var/tmp/cpumap2/`, `/var/tmp/wifi-panic-0634.txt`, `/var/tmp/webbench.py` | 측정 결과와 도구 |
