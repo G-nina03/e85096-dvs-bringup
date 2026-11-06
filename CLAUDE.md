@@ -87,7 +87,8 @@ docker run --rm --privileged -v e850-out:/o:ro -v "$PWD/tools/linux510:/t:ro" -v
 - **카메라:** `ov5647-cap.py`는 실행하는 동안 콘솔 printk를 끈다. 프레임마다 나오는 커널 메시지가 UART로 나가면 CSIS 인터럽트를 놓치기 때문이다.
 - **USB 호스트:** 꺼져 있어서 키보드·마우스가 없다. 데스크톱 환경은 보류했다(GPU 사용자 공간 드라이버 없음).
 - **포트:** nginx가 80번 포트를 쓴다. Apache를 올리기 전에 사용자와 포트를 정한다.
-- **Wi-Fi:** 펌웨어가 패닉하면(`WLBT FW PANIC`) 재부팅할 때까지 Wi-Fi가 없다. 자동 복구가 꺼져 있다(11.30). 그때는 ACM 콘솔로 작업한다.
+- **Wi-Fi:** 펌웨어가 패닉하면(`WLBT FW PANIC`) 드라이버가 펌웨어를 다시 올리고 약 6초 뒤 다시 연결한다(11.31, `e850-wifi.sh`의 `disable_recovery_handling=0`). 복구 횟수는 `/proc/driver/mxman_ctrl0/mx_recovery_count`로 본다. `mx_panic`은 읽기만 해도 펌웨어가 패닉하니 `cat`하지 않는다.
+- **재부팅 뒤 ACM이 안 보일 때:** UDC가 `not attached`이고 UART에 `dwc3_otg_start_gadget does not have any gadget`이 있으면 `e850-vbus` 경합이다(11.31). 케이블을 다시 꽂아도 소용없다. philip은 sudo를 못 쓰니 전원을 껐다 켠다.
 - **보드 `/tmp`:** 부팅 때 비워진다. 남길 파일은 `/var/tmp`에 둔다.
 - **`pgrep -f 'ov5647-cap.py --live'`:** ssh로 보낸 명령 줄 자신도 잡는다. live PID는 `systemctl show -p MainPID --value dvslive`로 얻는다.
 

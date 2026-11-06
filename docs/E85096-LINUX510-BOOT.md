@@ -2180,3 +2180,125 @@ settle 값은 결과에 영향이 없었다.
 | 재부팅 3번 | 06:02(Wi-Fi 복구), 06:28(CPU7 설정 확인), 06:39(Wi-Fi 패닉 복구) KST |
 | Wi-Fi 절전 | 시험으로 껐다가 다시 켰다(바뀐 것 없음) |
 | `/var/tmp/cpumap2/`, `/var/tmp/wifi-panic-0634.txt`, `/var/tmp/webbench.py` | 측정 결과와 도구 |
+
+### 11.31 Wi-Fi 펌웨어 패닉: 원인 조사, 자동 복구 켬(재연결 5.6~6.5초) (2026-11-07)
+
+사용자 요청: Maxwell(mx140) 펌웨어 패닉의 원인을 조사하고, 드라이버 자동 복구를 시험한다. 효과가 있으면 부팅 때 적용한다.
+
+**패닉 경로(소스, `drivers/misc/samsung/scsc`).**
+- 펌웨어가 스스로 패닉하면 WLBT reset request(IRQ 126, WDOG)를 올린다.
+  - `platform_wdog_isr()`(`platform_mif_3830.c`) → `panicmon_isr()`(`panicmon.c`) → `mxman_fail(SCSC_PANIC_CODE_FW << 15)` 순서로 간다. 로그의 `WLBT FW failure 0x0`는 "출처 = 펌웨어"라는 뜻이다.
+  - `mxman_failure_work()`가 펌웨어가 공유 메모리에 쓴 R4 panic record(v2, 53워드)를 읽는다. 패닉 코드는 [3]번 워드다.
+- **`WLBT FW PANIC: 0x04`의 뜻은 호스트 소스에 없다.** 펌웨어 내부 번호이고, 드라이버에는 번호→이름 표가 없다.
+  - 로그의 `syserr in 0, subcode 0x4: L7 -> L8`은 subsystem 0, subcode 4라는 뜻이다.
+  - 펌웨어 기호 정보가 없어서 기록의 레지스터 값(예: [21] `8018e7b4`)을 함수 이름으로 바꿀 수 없다.
+- 그다음은 `disable_recovery_handling`에 달렸다.
+  - 1(AOSP 기본, 주석 "enable in init.rc"): 서비스를 얼린 채로 둔다. 그리고 `disable_recovery_until_reboot = true`가 된다. **그래서 패닉 뒤에 0을 써도 소용없다.** 패닉 전에 써야 한다.
+  - 0: `srvman_unfreeze_services()` → `scsc_mx_module_reset()`(Wi-Fi 드라이버 remove/probe) 순서로 간다.
+    - Wi-Fi 드라이버는 STA `wlan0`이 올라가 있으면 L8을 L7로 낮춘다(`Reducing reset level: L8->L7`). 그래서 Android 프레임워크 없이 스스로 복구한다.
+    - 복구 순서: `slsi_failure_reset` → `slsi_chip_recovery`(서비스 열기, hcf 올리기, 시작).
+    - 다시 연결하는 일은 wpa_supplicant가 한다.
+- WDOG IRQ는 펌웨어를 다시 올릴 때마다 해제하고 새로 등록한다(`platform_mif_unmap`/`map`). 그래서 복구 뒤에 나는 패닉도 잡힌다.
+- `CONFIG_SCSC_WLBT_AUTORECOVERY_PERMANENT_DISABLE`은 꺼져 있다(`e850-out:/.config`).
+- **패닉을 일부러 일으키는 방법:** `/proc/driver/mxman_ctrl0/mx_panic`.
+  - 쓰기가 `mxman_force_panic()` → `MM_FORCE_PANIC` 메시지를 보낸다. 펌웨어가 스스로 패닉하므로 실제와 같은 IRQ 126 → `panicmon_isr` 경로를 탄다. 패닉 코드만 `0xf0`으로 다르다.
+  - **읽기만 해도 패닉한다**("allow test in user builds"). 권한이 0666이라 아무 계정이나 할 수 있다. `cat`하지 말 것.
+  - `mx_fail`(호스트가 일으키는 실패)과 `scsc_mx.syserr_command`(레벨 8)도 있다. 시험에는 쓰지 않았다.
+- 런타임 쓰기: `/sys/module/scsc_mx/parameters/disable_recovery_handling`은 `S_IWUSR`라 root가 쓸 수 있다.
+
+**지난 패닉 기록(관찰).**
+- 06:34 패닉(부팅 −1): 지속 journal에 R4 기록 53워드가 모두 남아 있다. 사본은 `~/e850-logs/wifi/panic0634-full.txt`(카메라 경고는 뺐음)다.
+  - 패닉 앞 30초 동안 Wi-Fi 쪽 로그는 없다. roaming 기록도 없다(그 부팅 전체에서 `ROAM_SCAN_STARTED` 0번).
+  - 링크는 5 GHz(`…36:d6`)였다. 그 순간 Mac이 scp로 3.5 MB를 받기 시작했다(11.30).
+- 03:58 패닉(부팅 −3, 18:58 UTC): **기록이 없어졌다.**
+  - journal이 6분에 16 MB씩 쌓이고 288 MB에서 지워진다. 그래서 약 1시간 50분만 남는다. 이 부팅의 journal은 지금 20:13 UTC부터만 있다.
+  - Mac의 `uart.log`에도 없다. live가 콘솔 printk를 1로 낮춘 뒤로는 커널 로그가 UART로 나가지 않는다.
+- journald가 커널 메시지를 놓친 적은 없다. 부팅 4개 모두 `Missed N kernel messages`가 0번이다.
+
+**시험 1: 런타임으로 복구를 켜고 강제 패닉 4번(07:14~07:19 KST).**
+- 방법:
+  - 보드: `tools/board/wifi-statelog.sh`가 0.2초마다 operstate, wpa_state, BSSID, IPv4를 `/var/tmp`에 적는다.
+  - Mac: `tools/host/webprobe.py`가 0.25초마다 `:8080/stats`에 새 연결로 요청한다(제한 1초).
+  - 두 시계는 NTP로 맞춰져 있고 차이는 0.2초 안이다.
+  - live(`dvslive`)는 그대로 돌렸다.
+- `echo 0 > …/disable_recovery_handling` 다음에 `echo 1 > /proc/driver/mxman_ctrl0/mx_panic`.
+
+| 번 | 시각(KST) | 링크 끊김 | wpa COMPLETED | 8080 첫 응답 끝 | 다시 붙은 BSS |
+|---|---|---|---|---|---|
+| 1 | 07:14:38 | +0.11 s | +6.39 s | +6.42 s | 5 GHz `…36:d6` |
+| 2 | 07:16:47 | +0.26 s | +5.68 s | +5.85 s | 5 GHz |
+| 3 | 07:17:42 | +0.24 s | +5.58 s | +5.60 s | 2.4 GHz `…36:d7` |
+| 4 | 07:18:37 | +0.02 s | +6.50 s | +6.81 s | 5 GHz |
+
+- 4번 모두 복구됐다. `mx_recovery_count`가 4가 됐다. `dvslive`, `e850-wifi`, `wpa_supplicant@wlan0`은 모두 active였다.
+- 1번의 시간선(journal):
+  - +0.73 s: 펌웨어 정지(`mxman_stop`, PMU reset)
+  - +0.77 s: 다시 올림. +0.87 s `MM_START_IND`, +1.17 s 서비스 시작
+  - +1.17 s: wpa_supplicant의 scan이 한 번 실패(−5)
+  - +2.12 s: 38채널 전체 scan 시작. 끝나는 데 4초 걸림
+  - +6.13 s: 연결 시작. +6.39 s 완료
+  - **재연결 시간의 대부분은 전체 scan이다.**
+- 부작용(관찰):
+  - 복구 중 카메라 CSI가 `interrupt lost(2)`를 두 번 냈고, `frame is drop`이 1장 났다. 장치 IRQ가 모두 CPU0에 있다.
+  - 4번째 복구 때 `WARNING … vsnprintf` 1번이 났다(`slsi_add_log_to_system_error_buffer`, taint W).
+    - vendor 버그다(`dev.c`): `buf_size`가 이미 `size − pos`인데 `scnprintf(…, buf_size - pos, …)`로 한 번 더 뺀다. 기록이 2 KB를 넘으면 크기가 음수가 된다.
+    - `vsnprintf`는 `size > INT_MAX`면 쓰지 않고 0을 돌려준다(WARN_ON_ONCE). 그래서 메모리는 넘치지 않는다. 진단용 버퍼 기록만 멈춘다.
+    - 고치려면 `scsc_wlan.ko`를 다시 빌드해야 한다. 이번에는 하지 않았다.
+  - 커널 멈춤이나 재부팅은 없었다.
+
+**시험 2: 재현 조건(복구를 켠 채, 07:20~07:31 KST).**
+
+| 조건 | 양 | 결과 |
+|---|---|---|
+| 보드 → Mac 3.5 MB(06:34와 같은 크기), ssh `cat` | 20번 | 각 0.95~1.08 s(연결 포함 26~29 Mbit/s). 패닉 0 |
+| 보드 → Mac 300 MB(`head -c … /dev/zero`) | 1번 | 65 s, 36.9 Mbit/s. 5 GHz, −71~−72 dBm, tx 97.5 Mbit/s. 패닉 0 |
+| Mac → 보드 100 MB | 1번 | 18.6 s, 42.9 Mbit/s. 패닉 0 |
+| 보드 → Mac 300 MB + 15 s마다 `wpa_cli roam` | 2번 | 아래. 패닉 0 |
+
+- `wpa_cli roam …36:d7`(2.4 GHz)은 5번 모두 `FAIL`이었다. `roam …36:d6`(이미 연결된 BSS)은 같은 BSS 재결합 5번이 됐다.
+  - 5번째 재결합은 AP가 거절했다(`ASSOC-REJECT status_code=1`, 07:26:06). 끊긴 뒤 scan하고 4.6 s 만에 2.4 GHz에 붙었다. 그동안 송신은 8.7 Mbit/s로 떨어졌다.
+  - 07:29:32에 펌웨어가 스스로 roaming했다(`ROAM_SCAN` → `ROAM_AUTH_COMPLETE` → 5 GHz).
+- 약 11분, 송수신 합 약 1.1 GB(70 MB + 300 MB + 100 MB + 600 MB), 재결합 5번, 끊김 1번, 펌웨어 roaming 1번 동안 **패닉은 0번**이었다. 복구 횟수도 4 그대로였다.
+- **재현하지 못했다.** 패닉 빈도는 2.6시간에 1번, 6분에 1번이었다. 그래서 11분 시험으로는 큰 송신, roaming, 신호 가설을 버릴 수도 굳힐 수도 없다.
+- 이번 부팅에서도 저절로 대역을 오갔다(22:11:36 5 GHz, 22:11:52 2.4 GHz). 07:06에는 roaming scan 사이에 Mac의 scp가 끊겼다(`Host is down`, 1분 안에 돌아옴). 패닉은 아니었다.
+
+**원인(가설, 측정 안 함).**
+- 펌웨어와 드라이버 판이 다르다. 펌웨어는 Android 10 vendor 이미지의 `S612_E3830_C4_Y19W51A`(2019-12-20)다. 드라이버는 Android 13 BSP의 11.20.0.1.0이다.
+- 부팅 때 `slsi_get_qsf_mib_data: Type mismatch`, `Failed to read regdb freq_ranges`가 나온다. 맞는 펌웨어가 없어서 시험할 수 없다.
+- 0x04의 뜻을 알려면 펌웨어 로그가 필요하다.
+  - 펌웨어 로그는 시작 뒤 DRAM 링(`mxl` 2 MB)으로 간다. 패닉 때 `scsc_log_collector`가 이것을 모으지만, 꺼낼 사용자 공간 데몬(wlbtd)이 없어서 버려진다(`WLBTD not running ?`).
+
+**부팅 때 적용(바꾼 것).**
+- `tools/linux510/e850-wifi.sh`: `modprobe scsc_mx disable_recovery_handling=0`.
+  - `e850-wifi.service`가 모듈을 직접 올린다. scsc 모듈은 `/etc/modprobe.d/e850-blacklist.conf`에 있어 자동으로는 올라오지 않는다.
+  - 보드에 넣었다(md5 `47489536…`, 저장소와 같음). 이전 판은 `/root/e850-wifi.sh.prev-recovery`(7d4af31c…)다.
+- 07:34 KST에 재부팅했다. 부팅 직후 `disable_recovery_handling`은 `0`이었다. `e850-wifi`, `dvslive`, `wpa_supplicant@wlan0`은 active, 8080은 200이었다.
+- 부팅 설정만으로 강제 패닉 시험: **아직 못 했다.** ACM이 없어서(아래), 복구에 실패하면 보드에 닿을 길이 없었다. 변수는 런타임 시험과 같다.
+
+**재부팅 뒤 ACM 콘솔이 안 올라옴(관찰, Wi-Fi와 무관).**
+- 07:34 재부팅 뒤 Mac에 `/dev/cu.usbmodeme850_961`이 없었다. 보드 UDC 상태는 `not attached`였다.
+- UART 로그(이 부팅 5.905 s)에 `dwc3_otg_start_gadget does not have any gadget`가 2번 찍혔다. `e850-vbus`가 VBUS를 알린 시점에 gadget이 아직 컨트롤러에 붙지 않은 것이다.
+  - 앞 부팅은 pullup → VBUS → `start_gadget`(타이머 시작) 순서였고 정상이었다.
+  - 그 뒤 다시 시도하는 곳이 없다. VBUS는 하드웨어가 아니라 `e850-vbus.ko`가 한 번 알리는 것이라 케이블을 다시 꽂아도 소용없다.
+- root로 `rmmod e850_vbus; modprobe e850-vbus`하면 될 것으로 본다(시험 못 함). philip은 sudo 비밀번호가 없어서 할 수 없었다.
+
+**남은 것.**
+- 다음 실제 패닉(0x04)에서 복구되는지는 아직 못 봤다. 경로는 강제 패닉과 같다(IRQ 126 → `panicmon_isr`).
+  - 복구가 켜져 있으면 패닉이 눈에 띄지 않는다. `cat /proc/driver/mxman_ctrl0/mx_recovery_count`와 `mx_lastpanic`(코드)으로 확인한다. 둘 다 재부팅 전까지 남는다.
+  - journal은 약 1시간 50분만 남는다. 기록을 보려면 그 안에 `journalctl -g 'WLBT FW PANIC|panic_record'`로 꺼내야 한다.
+- 카메라 경고 로그를 줄이면 journal이 더 오래 남는다.
+- `e850-vbus` 경합: initramfs에서 UDC 상태를 보고 VBUS를 다시 알리는 방법을 찾는다.
+- `mx_panic`이 0666이다. 웹 앱 말고 다른 사용자가 생기면 권한을 줄인다.
+
+**보드에 바꾼 것.**
+
+| 경로 | 변경 |
+|---|---|
+| `/usr/local/bin/e850-wifi.sh` | `modprobe scsc_mx disable_recovery_handling=0`(47489536…). 이전: `/root/e850-wifi.sh.prev-recovery` |
+| `/sys/module/scsc_mx/parameters/disable_recovery_handling` | 07:14 런타임으로 0(재부팅 전까지), 07:34부터 부팅 때 0 |
+| Wi-Fi 펌웨어 | 강제 패닉 4번(07:14~07:19), 모두 복구 |
+| 재부팅 1번 | 07:34 KST(부팅 설정 확인) |
+| `/var/tmp/wifirec/` | `statelog.sh`, `roamloop.sh`, `blob`(3.5 MB), 상태·roam 기록, journal 발췌 |
+| `/var/tmp/panic0634-full.txt` | 06:34 패닉 전후 journal(카메라 경고 뺌) |
+
+Mac: `~/e850-logs/wifi/`(`panic0634-full.txt`, `rec1/`: `web.log`, `state.log`, `t0.txt`, `tx.log`, `roam.log`, `journal*.txt`).

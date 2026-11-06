@@ -15,7 +15,7 @@
 | DVS 센서 S5KRC1S | I2C 확인: `i2c-7`(HSI2C2) 주소 0x10, 0x303B 쓰기/읽기 OK. 전원은 `modules/dvs-power`(LDO32 + RSTN GPC0[2]). 매뉴얼에 칩 ID 레지스터 없음, 0x36도 응답(정체 모름). Pablo CIS 드라이버 `modules/s5krc1s-pablo`(OV5647과 같은 ISP 우회) 빌드, boot-dvs로 부팅. 드라이버로 전원·I2C·stream on까지 동작. Delta_10_2000FPS setfile로 **CSIS가 MIPI 프레임을 받는다**(F38/3 s). 하지만 DMA done이 없어 VC0 프레임은 사용자 공간에 0개, stop 시 VRESOL_MISMATCH·OVERFLOW. overflow 패닉은 껐다. 스트림 도중 I2C 쓰기나 insmod를 한 시험에서 soft lockup이 두 번 났다(전원 재투입 필요). 1000 FPS 시도(`to_scnt1`=1999)는 아직 효과를 측정하지 못했다. IRQ 폭주 원인은 CSIS v1.2가 VRESOL 오류 상태를 지우지 않은 것이었다(패치로 수정). devfreq를 최대로 하면 **DVS 이벤트가 사용자 공간에 온다**(`tools/host/dvsdecode.py`로 AER 패킷 확인). 남은 문제: CRC 오류(1499 Mbps 수신 설정에서 줄지만 남음), 매뉴얼에 없는 패킷 type 000000/000101(손상인지 미확정). 캡처는 `dvscap.sh`. 타임스탬프로 잰 실제 프레임 간격은 494 µs(약 2024 fps)라서 1000 FPS 설정은 효과가 없다. 오류 10프레임이면 CSIS를 끄는 vendor 동작을 `fimc_is.e850_csi_err_stop=0`으로 풀었고, **`ov5647-cap.py --live --raw8`로 HDMI에 이벤트 영상(ON 초록/OFF 빨강)을 계속 띄운다**(`is_cis_s5krc1s.flush_us=250`이면 초당 약 11번 갱신, 11.25. to_scnt1은 프레임 주기가 아니라 MIPI flush 타임아웃이라 999로 되돌림) 32줄 모드(mode1)는 System MMU fault 패닉으로 보류(11.26). 디코딩·렌더를 C(`libdvsview.so`)로 옮겨 HDMI **30 fps**, 디코딩 5.2 ms/MB(numpy의 약 45배). 하지만 버퍼에 센서 시간의 약 14%만 들어온다(CRC 시 DMA abort로 추정, 11.27). **11.28: 화면 깜빡임의 세 원인을 고쳤다.** ① CRC 비트가 `error_id`에 쌓여 프레임마다 오류 flush(fimc-is 패치) ② 링크가 워드의 종류 비트 31~26을 지워 SUB 타임스탬프가 256 ms씩 사라짐(디코더가 복구) ③ 커널 볼륨에 남아 있던 EMERG 디버그 printk가 5초마다 CPU0 인터럽트 안에서 UART로 나가 프레임 손실(지움). 지금 live는 초당 68버퍼, 2초 커버리지 93~100%, 지연 21~24 ms, 어두운 프레임 0장(3분). 화면 조정 앱 `http://192.168.0.236:8080/`(인증 없음). CRC 오류는 초당 약 8700개로 그대로다(링크 문제로 추정). **11.29: CRC 원인은 센서 D-PHY PLL M(0x30A6)이었다.** vendor 0x8D는 줄마다 CRC였고, 0x72~0x78에서는 CRC 0, 깨진 워드 0이다. setfile을 0x75로 바꾸고 재부팅한 뒤 3분 동안 CRC 0개였다(0x70·0x7C·0x80은 데이터 없음, 0x7A는 CRC, 좁은 구간이라 장시간 안정성은 미측정). scan 속도는 `is_cis_s5krc1s.margin`(DTAG_FRM_MARGIN)으로 정한다. 주기는 430 + 32.4 × margin µs이고, 기본 17은 985 µs(1015 fps)다. 디코더가 scan 주기를 직접 잰다. **웹 서비스 `dvslive.service`(부팅 때 시작): `http://192.168.0.236:8080/`**, 미리보기 기본 10 fps(PNG는 C로 만들어 보드 안에서 34 ms), 센서 scan 속도·MIPI flush를 바꾸면 스트림을 다시 시작, 인증 없음. **11.30: 웹을 CPU7 전용으로 하고 keep-alive·TCP_NODELAY를 켜서 Wi-Fi 응답이 104~113 → 28~40 ms**(링크 상태에 따라), 미리보기 20/30 fps 추가 | 11.17~11.30 |
 | HDMI 콘솔 색 | 흰 글씨. dpu.ko 패치로 근본 수정했다(`e850-fbpal`과 rebind는 쓰지 않음). 전원을 껐다 켠 뒤에도 사용자가 화면에서 확인했다 | 11.14~11.16 |
 | HDMI 출력 꺼짐 | 해결. `decon_release()`가 fb0를 닫을 때마다 DECON을 끄던 것을 open 수 세기로 고쳤다(dpu.ko 재빌드) | 11.15 |
-| 네트워크 | Wi-Fi 192.168.0.236(ssh), USB NCM 192.168.7.1. **Wi-Fi 펌웨어 패닉 2번**(2026-11-07, 부팅 후 2.6시간과 6분, `WLBT FW PANIC: 0x04`). `scsc_mx.disable_recovery_handling=1`이라 재부팅해야 돌아온다. 그동안은 ACM 콘솔만 된다 | 11.5, 11.30 |
+| 네트워크 | Wi-Fi 192.168.0.236(ssh), USB NCM 192.168.7.1. **Wi-Fi 펌웨어 패닉 2번**(2026-11-07, 부팅 후 2.6시간과 6분, `WLBT FW PANIC: 0x04`, 원인 모름·재현 못 함). **11.31부터 자동 복구를 켰다**(`e850-wifi.sh`가 `disable_recovery_handling=0`). 강제 패닉 4번 모두 복구, `wlan0` 재연결 5.6~6.5초, 8080 응답 5.6~6.8초. 복구 횟수는 `/proc/driver/mxman_ctrl0/mx_recovery_count` | 11.5, 11.30, 11.31 |
 | 서비스 | nginx(80), ssh, e850-hdmi, e850-wifi, systemd-timesyncd, 워치독 데몬 | |
 | 사용자 계획 | MySQL + Apache로 출입 기록, YOLO nano 영상 처리 | |
 
@@ -93,6 +93,7 @@
 | `/usr/local/lib/libdvsview.so` | 2026-11-07 scan 주기 측정 + `dvs_png`(17f1368f…, 11.29). 이전: `.prev-scan`(42e1bb22) |
 | `/usr/local/share/dvsview/dvsctl.py`, `dvsctl.html` | 2026-11-07 CPU7 고정(`dvs-web`, uclamp), keep-alive, TCP_NODELAY, 20/30 fps(b53fd0b9…, 5171b486…, 11.30). 그 전: 센서 설정, CRC/s, canvas 미리보기(01bebea2…, 275b6bbe…, 11.29) |
 | `/etc/systemd/system.conf.d/e850-cpu7.conf` | 추가(11.30, 39e8c1a4…). `CPUAffinity=0-6`: systemd가 띄우는 모든 프로세스를 CPU0~6에 둔다. CPU7은 웹 스레드만 |
+| `/usr/local/bin/e850-wifi.sh` | 2026-11-07 `modprobe scsc_mx disable_recovery_handling=0`(47489536…, 11.31): Wi-Fi 펌웨어 패닉 뒤 자동 복구. 이전: `/root/e850-wifi.sh.prev-recovery`(7d4af31c) |
 | `/lib/modules/.../is-cis-s5krc1s.ko` | 2026-11-06 to_scnt1 999 복원 + `packets`/`flush_us` param(54365f52…, 11.25). 이전: `/root/is-cis-s5krc1s.ko.1999` |
 | `/etc/sysctl.d/90-e850-autoreboot.conf` | 추가(11.22). `softlockup_panic=1`, `panic=5` |
 | `/root/csis-irqstat.ko` | 추가(11.22). kretprobe IRQ 계수기, 캡처 전에 insmod하고 끝나면 rmmod |
@@ -112,12 +113,13 @@
      - `ov5647-cap.py --live`를 실행했다 끝내기
    - 판정: 매번 배경 0x000000, 글자 0xffffff인지 본다.
    - 2.2의 가설 1·2를 확인하는 실험이다.
-2. **Wi-Fi 펌웨어 패닉 (사용자가 있을 때, 새 세션 권장)**
-   - 2026-11-07에 두 번 났다(11.30). 펌웨어 watchdog(IRQ 126) → `WLBT FW PANIC: 0x04`이고, 자동 복구가 꺼져 있다.
+2. **Wi-Fi 펌웨어 패닉 원인 (자동 복구는 11.31에서 켰다)**
+   - 11.31에서 한 것: 자동 복구 켬(강제 패닉 4번 모두 복구, 5.6~6.5초). 큰 송수신 약 1.1 GB, 재결합, roaming 11분 동안 재현 0번. 0x04는 펌웨어 내부 번호라 호스트 소스에 뜻이 없다.
    - 할 일:
-     - `scsc_mx.disable_recovery_handling=0`으로 자동 복구를 시험한다. 커널이 멈출 수 있어서 USB·UART를 꽂아 둔다.
-     - 재현 조건을 찾는다(큰 송신, roaming scan, 신호 −66~−69 dBm).
-     - 카메라 경고 로그(초당 약 130줄)를 줄인다. 그래야 패닉 직전 로그가 링 버퍼에 남는다.
+     - 실제 패닉이 나면 1시간 50분 안에 `journalctl -g 'WLBT FW PANIC|panic_record'`로 기록을 꺼낸다. 그 뒤에는 journal이 지운다. 패닉이 났는지는 `mx_recovery_count`로 본다.
+     - 카메라 경고 로그(초당 약 130줄)를 줄인다. 그래야 journal이 더 오래 남는다.
+     - 펌웨어 로그(DRAM `mxl` 링)를 패닉 때 꺼내는 방법을 찾는다(wlbtd 없음).
+     - 재부팅 뒤 ACM이 안 올라온 `e850-vbus` 경합(11.31)을 고친다.
    - (전 2번 "dpu 드라이버 근본 수정"은 11.15, 11.16에서 끝났다.)
 3. **YOLO nano CPU 추론 벤치마크 (보드 변경은 패키지 설치뿐)**
    - 할 일: ncnn 또는 ONNX Runtime으로 YOLOv8n/YOLO11n(모델은 사용자 확인 필요)을 8코어에서 돌린다. 320과 640 입력에서 fps와 온도를 잰다.

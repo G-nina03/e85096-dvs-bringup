@@ -12,7 +12,8 @@
 set -e
 mkdir -p /lib/firmware /lib/etc
 [ -e /lib/etc/wifi ] || ln -s /vendor/etc/wifi /lib/etc/wifi
-modprobe scsc_mx
+# auto-recovery: restart the WLBT firmware after a FW panic (the AOSP default 1 needs a reboot)
+modprobe scsc_mx disable_recovery_handling=0
 modprobe scsc_wlan
 for i in 1 2 3 4 5; do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
 ip link set wlan0 up          # downloads mx140.bin and boots the WLBT core
