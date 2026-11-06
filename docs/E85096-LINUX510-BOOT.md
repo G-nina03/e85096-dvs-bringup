@@ -2157,7 +2157,7 @@ settle 값은 결과에 영향이 없었다.
    - `platform_wdog_isr: INT received 126`(WLBT watchdog) → `mxman_fail: WLBT FW failure 0x0` → `WLBT FW PANIC: 0x04`, `Reason: 'panicmon_isr'`, `Auto-recovery: off` 순서로 나왔다.
    - 그 순간 Mac이 scp로 3.5 MB를 받기 시작했다. 앞선 같은 크기의 scp 두 번은 괜찮았다.
    - ftrace 수집은 4분 반 전에 끝났다.
-   - 로그는 보드 `/var/tmp/wifi-panic-0634.txt`에 있다.
+   - 로그는 보드 `/var/tmp/wifi-panic-0634.txt`와 Mac `~/e850-logs/wifi-panic-0634.txt`에 있다. 앞선 부팅들의 journal도 보드에 남아 있다(지속 journal).
 - `scsc_mx.disable_recovery_handling=1`이다. 그래서 펌웨어가 패닉하면 재부팅할 때까지 Wi-Fi가 없다.
 - 커널 로그가 초당 약 130줄이다. 대부분 카메라 경고다(`is_video_poll is fail(65)`, `output(0x2) is NOT completed`, `dvfs table is NOT selected`, `is_group_shot`/`tasklet_csis_str_otf: N callbacks suppressed`). 그래서 링 버퍼가 몇 분 만에 덮이고, journal이 288 MB다.
 - 원인은 모른다. 가설(측정 안 함): 신호가 −66~−69 dBm이고, 펌웨어가 roaming scan을 한다(지난 부팅 로그에 `ROAM_SCAN_STARTED`, RSSI −67, threshold −75). 큰 송신 중에 펌웨어가 멈출 수 있다.
