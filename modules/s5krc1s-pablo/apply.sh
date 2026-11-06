@@ -34,5 +34,9 @@ patch -d "$K" -p1 -N -r - < "$HERE/patches/csis-v1_2-err-clear.patch" ||
 # (/sys/module/fimc_is/parameters, 0 = DT) for the CRC experiments without a new DTB. 11.22.
 patch -d "$K" -p1 -N -r - < "$HERE/patches/csi-speed-param.patch" ||
     patch -d "$K" -p1 -R --dry-run < "$HERE/patches/csi-speed-param.patch" >/dev/null
+# fimc_is.e850_csi_err_stop: CSIS gives up (free_irq, DMA off) after this many error frames; vendor 10,
+# 0 = never. Every S5KRC1S frame has CRC errors, so live view needs 0. 11.24.
+patch -d "$K" -p1 -N -r - < "$HERE/patches/csi-err-stop-param.patch" ||
+    patch -d "$K" -p1 -R --dry-run < "$HERE/patches/csi-err-stop-param.patch" >/dev/null
 grep -n 'camera/' "$K/$BOARD"
 echo "applied to $K"

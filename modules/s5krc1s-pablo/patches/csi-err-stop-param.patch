@@ -1,0 +1,22 @@
+--- a/drivers/media/platform/exynos/camera/is-device-csi_v4.c
++++ b/drivers/media/platform/exynos/camera/is-device-csi_v4.c
+@@ -1025,6 +1025,10 @@
+ #endif
+ }
+ 
++/* e850: 0 = keep streaming however many frames fail (S5KRC1S: CRC on every frame, 11.24) */
++static uint e850_csi_err_stop = CSI_ERR_COUNT;
++module_param(e850_csi_err_stop, uint, 0644);
++
+ static void csi_err_handle(struct is_device_csi *csi)
+ {
+ 	struct is_core *core;
+@@ -1054,7 +1058,7 @@
+ 	csi->error_count++;
+ 
+ 	/* 5. Call sensor DTP if Err count is more than a certain amount */
+-	if (csi->error_count >= CSI_ERR_COUNT) {
++	if (e850_csi_err_stop && csi->error_count >= e850_csi_err_stop) {
+ 		device = container_of(csi->subdev, struct is_device_sensor, subdev_csi);
+ 		core = device->private_data;
+ 

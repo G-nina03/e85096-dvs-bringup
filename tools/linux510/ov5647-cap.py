@@ -20,6 +20,7 @@ Buffers are dma-bufs from /dev/dma_heap/system-uncached (the Pablo QBUF path wan
 Each file is one VC0 frame: one little-endian u16 per pixel, 10 valid bits (raw10-view.py shows it).
 
     ov5647-cap.py --live [-n 0]      live video on HDMI (/dev/fb0) instead of files; -n 0 = forever
+    ov5647-cap.py --live --raw8 -W 8192 -H 127 -n 0 -b 8 -B 16   S5KRC1S events on HDMI (needs fimc_is.e850_csi_err_stop=0)
 """
 import argparse
 import atexit
@@ -28,6 +29,7 @@ import fcntl
 import mmap
 import os
 import select
+import signal
 import struct
 import sys
 import time
@@ -256,7 +258,79 @@ class Live:
             self.t = now
 
 
-live = Live(a.W, a.H) if a.live else None
+class DvsLive:
+    """S5KRC1S compressed AER buffer (32-bit big-endian packets, manual Fig. 49-52) as a 960x720 event
+    image: ON events green, OFF red, on black, centred on /dev/fb0. One VC0 buffer = all its frames."""
+    XS, YS = 960, 720
+
+    def __init__(self):
+        import numpy as np
+        self.np = np
+        fd = os.open('/dev/fb0', os.O_RDWR)
+        var = bytearray(160)
+        fcntl.ioctl(fd, 0x4600, var)                 # FBIOGET_VSCREENINFO
+        xres, yres, _, yv = struct.unpack_from('4I', var)
+        yoff = struct.unpack_from('I', var, 20)[0]
+        stride = int(open('/sys/class/graphics/fb0/stride').read())
+        self.fbmap = mmap.mmap(fd, stride * yv, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+        fb = np.frombuffer(self.fbmap, np.uint8).reshape(yv, stride)
+        x0, y0 = (xres - self.XS) // 2, yoff + (yres - self.YS) // 2
+        self.win = fb[y0:y0 + self.YS, x0 * 4:(x0 + self.XS) * 4].view('<u4')
+        self.n = self.got = 0
+        self.t = time.time()
+        import threading
+        self.ready = threading.Event()
+        threading.Thread(target=self.draw, daemon=True).start()
+
+    def events(self, w):
+        """-> x, y, off (bool) arrays for every event pixel in the packet words w (>u4)."""
+        np = self.np
+        i = np.arange(len(w))
+        last_col = np.maximum.accumulate(np.where(w >> 26 == 1, i, 0))
+        x = (w[last_col] & 0x7ff).astype(np.int32)
+        g = (w >> 31 == 1) & (w[last_col] >> 26 == 1)
+        w, x = w[g], x[g]
+        offs = (w >> 26) & 0x1f
+        a1 = ((w >> 18) & 0x7f).astype(np.int32)
+        sg = offs == 0
+        # SGROUP: [7:0] ON, [15:8] OFF of one group. MGROUP: [7:0] group1, [15:8] group1+offset, polarity bits 16/17
+        base = np.concatenate([a1, a1 + offs]) * 8
+        off = np.concatenate([~sg & (w >> 16 & 1 == 1), sg | (w >> 17 & 1 == 1)])
+        bits = np.concatenate([w & 0xff, (w >> 8) & 0xff]).astype(np.uint8)
+        xx = np.concatenate([x, x])
+        m = np.unpackbits(bits[:, None], axis=1, bitorder='little').astype(bool)   # (n, 8): row in group
+        y = (base[:, None] + np.arange(8))[m]
+        xx, off = np.broadcast_to(xx[:, None], m.shape)[m], np.broadcast_to(off[:, None], m.shape)[m]
+        ok = (xx < self.XS) & (y < self.YS)
+        return xx[ok], y[ok], off[ok]
+
+    def show(self, buf):
+        """Called in the capture loop: copy and clear only. A decode takes ~250 ms against a ~25 ms
+        MIPI frame, and VC0 running out of buffers stops the sensor group (11.24), so draw in a thread."""
+        self.latest = bytes(buf[:a.W * a.H])               # one read of the uncached dma-buf
+        buf[:a.W * a.H] = bytes(a.W * a.H)                 # bytesused is 0: clear so stale packets do not repeat
+        self.got += 1
+        self.ready.set()
+
+    def draw(self):
+        np = self.np
+        while True:
+            self.ready.wait()
+            self.ready.clear()
+            x, y, off = self.events(np.frombuffer(self.latest, '>u4'))
+            img = np.full((self.YS, self.XS), 0xff000000, np.uint32)
+            img[y, x] = np.where(off, 0xffff0000, 0xff00ff00)
+            self.win[:] = img
+            self.n += 1
+            if self.n % 10 == 0:
+                now = time.time()
+                log('dvs live: %d buffers in, %d drawn, %.1f draws/s, %d events in the last' % (
+                    self.got, self.n, 10 / (now - self.t), len(x)))
+                self.t = now
+
+
+live = (DvsLive() if a.raw8 else Live(a.W, a.H)) if a.live else None
+signal.signal(signal.SIGTERM, signal.default_int_handler)   # pkill: stream off cleanly (& ignores SIGINT)
 saved = 0
 t0 = last = time.time()
 try:

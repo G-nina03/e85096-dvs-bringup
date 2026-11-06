@@ -1642,3 +1642,52 @@ settle 값은 결과에 영향이 없었다.
 - CRC 오류의 원인(신호 품질, 2-lane 1.6 Gbps, 센서 CRC 계산 방식)은 아직 모른다.
 - 정의되지 않은 패킷이 데이터 손상인지 문서에 없는 패킷인지도 확정하지 못했다.
 - DT 기본값(1600)은 그대로 두었다. 파라미터 기본값은 0이라 동작이 바뀌지 않는다.
+
+### 11.24 실제 프레임 주기 측정, CSIS 오류 한도 해제, HDMI에 DVS 이벤트 live 표시 (2026-11-06)
+
+**프레임 주기(관찰).**
+- 측정 방법: 캡처(`dvs-frames-20261106/s1499/ov5647_1.raw`)에서 FRAME END 직후의 ref(ms)·sub(µs) 타임스탬프 차이를 쟀다. 단위는 데이터시트 6.5를 따른다.
+- 결과: 프레임 간격이 **494 µs(약 2024 fps)**로 일정하다.
+- 보드의 CIS 모듈(e296fa2f…)에는 `0x3912 = 0xCF`(to_scnt1 = 1999)가 실제로 들어 있다. 그런데도 1000 fps가 되지 않았다. 가설: to_scnt1은 프레임 주기를 정하는 레지스터가 아니다.
+- 진짜 FRAME END는 `0x0c03c800`, `0x0c03d000` …처럼 frame# [18:11]이 하나씩 는다. bit 24가 1인 `0x0d……` 워드는 FRAME END가 아닌 것으로 보인다. `dvsdecode.py`는 아직 이 둘을 같은 것으로 센다.
+- 238/750 µs가 번갈아 나오는 구간도 있다. 이 구간에서는 sub 타임스탬프가 기대값보다 정확히 256 작다. **bit 8이 0으로 빠진 것**으로, 특정 비트 위치의 오류다. CRC 오류와 관계가 있는지는 확인하지 못했다.
+
+**스트림이 몇 프레임 만에 멈추던 원인(관찰 → 수정).**
+- 증상:
+  - `ov5647-cap.py -n 20`도 VC0 2~11프레임 뒤 멈췄다(csis-irqstat FS 21).
+  - 그전까지는 3프레임만 받아서 드러나지 않았다.
+- dmesg 순서:
+  1. 프레임마다 `CSIS_ERR_CRC` / `DMA_ABORT_DONE`이 나고 `frame was done with error`가 찍힌다.
+  2. 이어서 `csi_err_handle` → `csi_free_irq`에서 `Trying to free IRQ 142 from IRQ context!` WARN이 난다.
+  3. 그 뒤로 CSIS 인터럽트가 0개다.
+- 원인: `is-device-csi_v4.c csi_err_handle`은 오류 프레임이 `CSI_ERR_COUNT`(10)개가 되면 `csi_hw_disable` + `free_irq`를 한다. S5KRC1S는 모든 프레임에 CRC가 있어서 이 한도에 바로 걸렸다.
+- 수정: `patches/csi-err-stop-param.patch`(apply.sh에 추가)로 `fimc_is.e850_csi_err_stop`을 만들었다.
+  - 기본값은 10이라 vendor 동작 그대로다.
+  - 0이면 멈추지 않는다.
+  - 오류 버퍼는 지금처럼 ERROR 플래그를 달고 사용자 공간에 온다.
+- 보드에 바꾼 것: fimc-is.ko a2149bb7…(이전 판은 `/root/fimc-is.ko.prev-11.23`). 적용하려고 소프트웨어 재부팅을 한 번 했다. fastboot에 들어가지 않고 바로 부팅됐다.
+- 결과: `e850_csi_err_stop=0`이면 스트림이 계속 간다. 60초에 VC0 211프레임을 받았고, 그 뒤 10분 넘게 계속 돌았다.
+- 처음에는 "그리기가 느려 VC0 버퍼가 바닥나서 멈춘다"고 봤다. 이 가설은 틀렸다. 화면을 그리지 않는 캡처 모드에서도 똑같이 멈췄다.
+
+**HDMI live 표시(`ov5647-cap.py --live --raw8`, 새 `DvsLive` 클래스).**
+- 표시 방식:
+  - 버퍼의 32비트 BE 패킷을 numpy로 한 번에 디코딩한다.
+  - x는 COLUMN [10:0]이다.
+  - y는 그룹 주소 × 8 + 비트다. SGROUP은 [7:0]이 ON, [15:8]이 OFF다. MGROUP은 group1 / group1 + offset이고 극성은 bit 16/17이다.
+  - 960×720 이벤트 영상을 fb0 가운데에 그린다. ON은 초록, OFF는 빨강이다.
+  - Mac에서 assert 자체 시험을 통과했다.
+- 성능(보드 측정): 버퍼 하나(1 MB) 디코딩에 210~270 ms, 그리기에 33 ms가 든다. uncached dma-buf 복사는 7 ms뿐이라 병목이 아니다.
+- 그래서 캡처 루프는 버퍼를 복사·0으로 지우기·다시 넣기만 하고, 디코딩·그리기는 스레드가 가장 최근 버퍼로 한다. bytesused가 0이라, 지우지 않으면 지난번 패킷이 다시 보인다.
+- 측정: 버퍼가 초당 약 3.5개 들어오고 화면은 초당 1.5번 바뀐다. 아무도 없는 정지 장면에서 버퍼당 이벤트는 400~700개다.
+  - CRC 메시지가 약 2 ms마다 찍히므로, 127줄짜리 MIPI 프레임 하나에 약 250 ms가 걸린다.
+  - 가설: 패킷 길이가 8192바이트로 고정이라, 이벤트가 적으면 줄이 천천히 찬다. 11.22의 초당 약 40프레임은 이벤트가 많았던 때다.
+- SIGTERM을 KeyboardInterrupt로 바꿨다. `&`로 띄운 프로세스는 SIGINT를 무시하기 때문이다. `pkill -TERM -f 'ov5647-cap.py --live'`로 stream off까지 정상으로 끝나는 것을 확인했다.
+- 실행 방법(root):
+  - 먼저 devfreq mif/int/cam의 min을 max로 올린다.
+  - `modprobe fimc-is; modprobe is-cis-s5krc1s; echo 0 > /sys/module/fimc_is/parameters/e850_csi_err_stop`
+  - `(setsid nohup ov5647-cap.py --live --raw8 -W 8192 -H 127 -n 0 -b 8 -B 16 -t 3 >/tmp/dvslive.log 2>&1 </dev/null &)`
+- 화면 확인: fb0는 `read()`하면 0바이트가 나온다. mmap으로 읽어야 한다(scratchpad `fbgrab.py`). 받은 화면에는 정지 장면의 잡음 이벤트가 점으로 보였다.
+- 부작용 확인:
+  - CRC printk는 dmesg에만 쌓이고 UART로는 나가지 않는다.
+  - journald 사용량은 30초 동안 14.2M 그대로였다.
+  - devfreq를 최대로 둔 채의 발열·전력은 재지 않았다.
