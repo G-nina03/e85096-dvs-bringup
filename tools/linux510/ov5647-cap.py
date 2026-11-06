@@ -20,7 +20,7 @@ Buffers are dma-bufs from /dev/dma_heap/system-uncached (the Pablo QBUF path wan
 Each file is one VC0 frame: one little-endian u16 per pixel, 10 valid bits (raw10-view.py shows it).
 
     ov5647-cap.py --live [-n 0]      live video on HDMI (/dev/fb0) instead of files; -n 0 = forever
-    ov5647-cap.py --live --raw8 -W 8192 -H 127 -n 0 -b 8 -B 16   S5KRC1S events on HDMI (needs fimc_is.e850_csi_err_stop=0)
+    ov5647-cap.py --live --raw8 -W 8192 -H 127 -n 0 -b 8 -B 16   S5KRC1S events on HDMI (needs fimc_is.e850_csi_err_stop=0; is_cis_s5krc1s.flush_us=250 for ~11 draws/s)
 """
 import argparse
 import atexit
@@ -277,6 +277,7 @@ class DvsLive:
         x0, y0 = (xres - self.XS) // 2, yoff + (yres - self.YS) // 2
         self.win = fb[y0:y0 + self.YS, x0 * 4:(x0 + self.XS) * 4].view('<u4')
         self.n = self.got = 0
+        self.pending = []
         self.t = time.time()
         import threading
         self.ready = threading.Event()
@@ -306,9 +307,11 @@ class DvsLive:
 
     def show(self, buf):
         """Called in the capture loop: copy and clear only. A decode takes ~250 ms against a ~25 ms
-        MIPI frame, and VC0 running out of buffers stops the sensor group (11.24), so draw in a thread."""
-        self.latest = bytes(buf[:a.W * a.H])               # one read of the uncached dma-buf
+        MIPI frame (11.24); the thread decodes every buffer that came in since its last draw, so none is lost."""
+        raw = bytes(buf[:a.W * a.H])                       # one read of the uncached dma-buf (7 ms)
         buf[:a.W * a.H] = bytes(a.W * a.H)                 # bytesused is 0: clear so stale packets do not repeat
+        k = len(raw.rstrip(b'\0'))                         # a short frame (cis packets < 127) fills only the top
+        self.pending.append(raw[:(k + 3) & ~3])
         self.got += 1
         self.ready.set()
 
@@ -317,15 +320,17 @@ class DvsLive:
         while True:
             self.ready.wait()
             self.ready.clear()
-            x, y, off = self.events(np.frombuffer(self.latest, '>u4'))
+            batch, self.pending = self.pending, []
+            data = b''.join(batch)[-4 << 20:]                # shortcut: >4 MB behind keeps the newest only
+            x, y, off = self.events(np.frombuffer(data[len(data) & 3:], '>u4'))
             img = np.full((self.YS, self.XS), 0xff000000, np.uint32)
             img[y, x] = np.where(off, 0xffff0000, 0xff00ff00)
             self.win[:] = img
             self.n += 1
             if self.n % 10 == 0:
                 now = time.time()
-                log('dvs live: %d buffers in, %d drawn, %.1f draws/s, %d events in the last' % (
-                    self.got, self.n, 10 / (now - self.t), len(x)))
+                log('dvs live: %d buffers in, %d drawn, %.1f draws/s, last draw %d buffers %d kB %d events' % (
+                    self.got, self.n, 10 / (now - self.t), len(batch), len(data) >> 10, len(x)))
                 self.t = now
 
 

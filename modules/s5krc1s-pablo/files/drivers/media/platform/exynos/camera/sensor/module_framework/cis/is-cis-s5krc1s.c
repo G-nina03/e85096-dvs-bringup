@@ -29,6 +29,18 @@
 
 static const struct v4l2_subdev_ops subdev_ops;
 
+/*
+ * Applied at each mode change, after the setfile; 0 = setfile value. In a sparse scene the sensor sends
+ * one packet per flush timeout, so a MIPI frame (= one VC0 buffer) takes packets x flush_us (11.25).
+ * CSIS takes the short frame: the VRESOL check is off (csis-v1_2-err-clear.patch).
+ */
+static uint packets;
+module_param(packets, uint, 0644);
+MODULE_PARM_DESC(packets, "MIPI_NUM_OF_PACKETS 0x391A/B per frame, 1..127 (VC0 buffer is 127 lines)");
+static uint flush_us;
+module_param(flush_us, uint, 0644);
+MODULE_PARM_DESC(flush_us, "MIPI FIFO flush timeout 0x3912/13 in us (fine count 0x3911 = 1 us), 1..1023");
+
 static int sensor_s5krc1s_write8(struct is_cis *cis, u16 reg, u8 value)
 {
 	if (!cis || !cis->client)
@@ -197,6 +209,19 @@ static int sensor_s5krc1s_cis_mode_change(struct v4l2_subdev *subdev, u32 mode)
 	ret = sensor_s5krc1s_set_two_lane(cis);
 	if (ret < 0)
 		return ret;
+
+	if (packets >= 1 && packets <= S5KRC1S_BRINGUP_PACKET_COUNT) {
+		ret = sensor_s5krc1s_write8(cis, 0x391A, packets & 0xff);
+		ret = ret ?: sensor_s5krc1s_write8(cis, 0x391B, packets >> 8);
+		if (ret < 0)
+			return ret;
+	}
+	if (flush_us >= 1 && flush_us <= 1023) {
+		ret = sensor_s5krc1s_write8(cis, 0x3912, flush_us & 0xff);
+		ret = ret ?: sensor_s5krc1s_write8(cis, 0x3913, flush_us >> 8);
+		if (ret < 0)
+			return ret;
+	}
 
 	/* Bring-up readback: verify programmed CSI-2 transport registers. */
 	sensor_s5krc1s_cis_log_status(subdev);

@@ -43,8 +43,8 @@ const u32 sensor_s5krc1s_setfile_A_Global[] = {
 	0x391B, 0x00, 0x1, /* frm_cnt_high */
 	0x3910, 0x81, 0x1, /* [7] : use_timeout, [0] : use_big_endian */
 	0x3911, 0x7C, 0x1, /* to_scnt0 (event clock) (1us) */
-	0x3912, 0xCF, 0x1, /* to_scnt1_low: 1999 (vendor 999 = 2000 fps) for 1000 fps */
-	0x3913, 0x07, 0x1, /* to_scnt1_high */
+	0x3912, 0xE7, 0x1, /* to_scnt1_low: 999 = 1 ms MIPI FIFO flush timeout (not the frame period, 11.25) */
+	0x3913, 0x03, 0x1, /* to_scnt1_high */
 	0x3914, 0x01, 0x1, /* to_mcnt */
 	0x3916, 0x40, 0x1, /* pkt_gap_low */
 	0x3917, 0x00, 0x1, /* pkt_gap_high */
