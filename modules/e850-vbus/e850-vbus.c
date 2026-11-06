@@ -9,11 +9,22 @@
  * suspended with clocks off (current_dr_role = 255), and touching a gadget
  * endpoint then hangs the bus. Loading this module sends "VBUS on" once;
  * unloading sends "VBUS off".
+ *
+ * The glue probe runs asynchronously and starts the OTG state machine
+ * (dwc3_otg_start) before it binds the gadget to it (otg_set_peripheral).
+ * VBUS in between ends in "dwc3_otg_start_gadget does not have any gadget",
+ * nothing retries, and the ACM console never comes up (docs 11.31). So wait
+ * for the gadget first.
  */
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/usb/otg-fsm.h>
+#include "core.h"
+#include "dwc3-exynos.h"
+#include "exynos-otg.h"
 
 int dwc3_exynos_vbus_event(struct device *dev, bool vbus_active);
 
@@ -22,7 +33,7 @@ static struct platform_device *pdev;
 static int __init e850_vbus_init(void)
 {
 	struct device_node *np = of_find_compatible_node(NULL, NULL, "samsung,exynos-dwusb");
-	int ret;
+	int ret, ms;
 
 	if (!np)
 		return -ENODEV;
@@ -30,8 +41,16 @@ static int __init e850_vbus_init(void)
 	of_node_put(np);
 	if (!pdev)
 		return -EPROBE_DEFER;
+	for (ms = 0; ms < 5000; ms += 10) {
+		struct dwc3_exynos *exynos = dev_get_drvdata(&pdev->dev);
+		struct dwc3_otg *dotg = exynos ? READ_ONCE(exynos->dotg) : NULL;
+
+		if (dotg && READ_ONCE(dotg->otg.gadget))
+			break;
+		msleep(10);
+	}
 	ret = dwc3_exynos_vbus_event(&pdev->dev, true);
-	pr_info("e850-vbus: VBUS on for %s: %d\n", dev_name(&pdev->dev), ret);
+	pr_info("e850-vbus: VBUS on for %s after %d ms: %d\n", dev_name(&pdev->dev), ms, ret);
 	if (ret)
 		put_device(&pdev->dev);
 	return ret;

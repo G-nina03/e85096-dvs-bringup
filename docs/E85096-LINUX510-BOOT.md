@@ -2304,3 +2304,91 @@ settle 값은 결과에 영향이 없었다.
 | `/var/tmp/panic0634-full.txt` | 06:34 패닉 전후 journal(카메라 경고 뺌) |
 
 Mac: `~/e850-logs/wifi/`(`panic0634-full.txt`, `rec1/`: `web.log`, `state.log`, `t0.txt`, `tx.log`, `roam.log`, `journal*.txt`, 부팅 뒤 시험은 `web3.log`, `state3.log`).
+
+### 11.32 journal 로그 줄이기(60초 7816 → 38줄), e850-vbus 경합 수정 (2026-11-07)
+
+서비스 작업 전 안정화의 1·2단계다. 목표는 두 가지다. 다음 실제 Wi-Fi 패닉(11.31)의 기록이 journal에 남게 한다. 재부팅 뒤 ACM 콘솔이 가끔 안 올라오는 문제를 고친다.
+
+**journal을 채우던 것(관찰, 11.31 부팅, 60초 7816줄 = 초당 130줄).**
+
+| 출처 | 초당 | 메시지 |
+|---|---|---|
+| fimc-is(카메라, bypass) | 약 106줄 | 프레임마다 `is_video_poll is fail(65)`, `output(0x2) is NOT completed`, `dvfs table is NOT selected` |
+| s3c2410_wdt(워치독) | 20줄 | 200 ms마다 두 클러스터 `Watchdog cluster N keepalive!`, ping마다 RTC 읽기(`s2m_rtc_read_time`) |
+
+- 카메라 메시지 세 가지는 bypass 모드(ISP 체인 없음, `sensor->ischain == NULL`)에서는 정상 동작이다.
+  - `is_video_poll`의 반환값 65는 poll mask(POLLIN|POLLRDNORM)다. 드라이버가 0이 아니면 모두 오류로 찍었다.
+  - VC0 프레임은 태그가 없어서 `out_flag`가 지워지지 않는다.
+  - DVFS 테이블은 ischain이 있을 때만 선택된다.
+- 워치독 드라이버는 ping마다 RTC를 읽어 `wdt->tm`에 넣는다. 이 값을 읽는 곳은 없다.
+- 초당 130줄이면 journal(상한 약 288 MB)이 약 1시간 50분만 남는다(11.31). 패닉 기록을 그 안에 꺼내야 했다.
+
+**바꾼 것 1: 카메라(fimc-is.ko).**
+- `modules/s5krc1s-pablo/patches/quiet-bypass-log.patch`를 새로 만들었다. `apply.sh`가 적용한다(`patch -N`, 다시 돌려도 됨).
+  - 세 메시지는 ischain이 있을 때만 찍는다. `is_video_poll`은 `EPOLLERR`일 때만 오류로 찍는다.
+- 커널 볼륨에만 있던 디버그 출력 2개(`[bypass] shot G%d`, `[bypass] FS G%d`, `pr_info_ratelimited`)도 지웠다. 저장소 스크립트에는 없던 것이다.
+- `fimc-is.ko`(f1e7bbf3…)를 보드에 넣었다. 이전 판은 `/root/fimc-is.ko.prev-11.31`(099c323b)이다.
+- 08:14 KST 재부팅 뒤: live fps 104, coverage 100, crc 0. 60초 journal은 7816 → 1185줄이었다. 남은 것은 모두 워치독이다.
+
+**바꾼 것 2: 워치독(s3c2410_wdt.ko).**
+- `modules/s3c2410-wdt/`를 새로 만들었다. `apply.sh`가 `quiet-keepalive.patch`를 커널 볼륨에 적용한다.
+  - `Watchdog cluster %u keepalive!` 2곳: `dev_info` → `dev_dbg`.
+  - `s3c2410wdt_gettime()`: RTC 읽기를 뺐다. ping한 태스크, 시각, CPU 기록은 그대로 둔다.
+- `s3c2410_wdt.ko`는 1단계 모듈이라 initramfs에 들어 있다. 그래서 부트 이미지를 다시 만들었다.
+
+**바꾼 것 3: e850-vbus 경합(e850-vbus.ko).**
+- 원인(소스로 확인): `dwc3_exynos_probe`는 비동기로 돈다. 먼저 `dwc3_otg_start`로 OTG 상태 기계를 시작하고, 그 뒤에 `otg_set_peripheral`로 gadget을 붙인다.
+  - 그 사이에 `e850-vbus`가 VBUS를 알리면 `dwc3_otg_start_gadget does not have any gadget`로 끝난다(11.31의 07:34 부팅).
+  - 다시 시도하는 곳이 없다.
+- 수정: `e850-vbus`가 VBUS를 알리기 전에 `dotg->otg.gadget`이 생길 때까지 10 ms 간격으로 최대 5초 기다린다. 몇 ms 기다렸는지 찍는다(`VBUS on for 13600000.usb after N ms`).
+  - `struct dwc3_exynos`와 `struct dwc3_otg`는 glue 드라이버 안에만 있다. 그래서 `Kbuild`에 `-I$(srctree)/drivers/usb/dwc3`를 넣었다.
+
+**부트 이미지 `~/e850-logs/boot-dvs3/boot.img`.**
+- boot-dvs2와 비교했다.
+  - `cmdline.txt`와 `merged.dtb`는 같다.
+  - initramfs에서 다른 파일은 `s3c2410_wdt.ko`, `e850-vbus.ko`, `fimc-is.ko` 3개뿐이다(`diff -rq`). 커널 Image는 그대로다.
+- rootfs의 `/lib/modules/.../`에도 같은 `s3c2410_wdt.ko`(dfd6bae7…)와 `e850-vbus.ko`(0990ffa3…)를 넣었다. 이전 판은 `/root/*.ko.prev-11.32`다.
+- 08:27 KST에 굽고 재부팅했다.
+
+**결과(측정).**
+- 60초 journal: **38줄**(커널 23, systemd-networkd 7, wpa_supplicant 4, 기타 4).
+  - 남은 것은 Wi-Fi 이벤트다: Radio Measurement 요청과 응답, EAPOL 재키, 멀티캐스트 필터.
+  - keepalive는 0줄이다.
+  - 부팅 한 번에 약 19000줄이 나온다(loglevel=8).
+- journal 보존 기간(추정, 측정 아님): 11.31의 16 MB/6분 ÷ 초당 130줄 → 줄당 약 340바이트다. 분당 38줄이면 하루 약 19 MB이고, 288 MB면 약 2주다. 부팅마다 약 6.5 MB가 더 든다.
+- 워치독 동작:
+  - ping 로그가 없어도 보드는 리셋되지 않는다.
+  - `to-fastboot`(워치독 데몬을 죽임)를 하자 31초 뒤 LK가 `Abnormal RST_STAT: 0x1000000`으로 fastboot에 들어갔다. 이전 이미지와 같다(약 32초).
+- e850-vbus: boot-dvs3로 5번 부팅했다(첫 부팅, `systemctl reboot` 3번, 워치독 리셋 1번).
+  - 5번 모두 ACM이 올라왔다.
+  - 5번 모두 `after 0 ms`였다. 즉 이번에는 경합 구간에 한 번도 걸리지 않았다.
+  - **기다리는 경로가 실제로 돈 적은 아직 없다.** 수정이 맞는지는 `after N ms`(N > 0)가 찍힌 부팅이 나와야 확인된다.
+  - journal에 남은 옛 모듈 부팅은 4번이다. 그중 1번(07:34)에서 경합이 났다. 그 전 부팅 기록은 journal에서 지워졌다.
+- 매 부팅 뒤 확인: `disable_recovery_handling` 0, `dvslive`, `e850-wifi`, `nginx`, `e850-hdmi` active. live fps 104, crc 0.
+
+**ACM 우회 방법 시험(11.31에서 "시험 못 함").**
+- 정상 상태에서 시험했다. 경합 상태에서는 시험하지 못했다.
+- Wi-Fi ssh에서 `sudo sh -c "rmmod e850_vbus; modprobe e850-vbus"`를 실행했다.
+  - ACM이 바로 끊겼다가 3초 안에 돌아왔다(UDC `configured`).
+  - root 자동 로그인도 됐다.
+- **ACM 콘솔 안에서 하면 안 된다.**
+  - `(setsid sh -c "rmmod …; …; modprobe …" &)`로 해 봤다. `rmmod`까지만 돌고 `modprobe`는 돌지 않았다. 다시 올리는 것은 ssh로 했다.
+  - 원인(확인): ACM 셸은 `serial-getty@ttyGS0.service` cgroup 안에 있다. pam_systemd 세션이 없다. 그 unit은 `KillMode=control-group`이다.
+  - ACM이 끊기면 unit이 끝나고, systemd가 cgroup 안의 프로세스를 `setsid`한 것까지 모두 죽인다.
+  - ACM에서 USB를 끊는 명령은 `systemd-run`으로 따로 띄워야 한다(시험 안 함).
+
+**판단: 패닉 전용 기록 서비스는 만들지 않는다.**
+- Wi-Fi 패닉은 커널을 멈추지 않는다. `process_panic_record`가 패닉 기록을 커널 로그로 내고, 그것이 persistent journal에 남는다.
+- journal은 이제 약 2주(추정) 남는다. `mx_recovery_count`와 `mx_lastpanic`은 재부팅 전까지 남는다.
+- 펌웨어 내부 로그(DRAM `mxl` 링)는 여전히 꺼내지 못한다(11.31).
+
+**보드에 바꾼 것.**
+
+| 경로 | 변경 |
+|---|---|
+| `/lib/modules/.../fimc-is.ko` | bypass 로그 끔(f1e7bbf3…). 이전: `/root/fimc-is.ko.prev-11.31`(099c323b) |
+| `boot` 파티션 | `~/e850-logs/boot-dvs3/boot.img`(08:27 KST). 이전: `boot-dvs2` |
+| `/lib/modules/.../s3c2410_wdt.ko` | keepalive 로그·RTC 읽기 뺌(dfd6bae7…). 이전: `/root/s3c2410_wdt.ko.prev-11.32`(81815cba) |
+| `/lib/modules/.../e850-vbus.ko` | gadget 기다림(0990ffa3…). 이전: `/root/e850-vbus.ko.prev-11.32`(d011b3b8) |
+| 재부팅 | 08:14(fimc-is), 08:27(boot-dvs3), 08:33~08:37 `systemctl reboot` 3번, 08:45 워치독 리셋 1번(`to-fastboot`) |
+| `e850-vbus` | 08:38 ACM에서 `rmmod`(ACM 끊김), 08:41 ssh에서 `modprobe`(돌아옴), 08:44 ssh에서 `rmmod; modprobe`(끊겼다가 돌아옴) |

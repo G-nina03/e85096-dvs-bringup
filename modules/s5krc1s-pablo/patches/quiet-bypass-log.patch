@@ -1,0 +1,35 @@
+--- a/drivers/media/platform/exynos/camera/is-dvfs.c
++++ b/drivers/media/platform/exynos/camera/is-dvfs.c
+@@ -365,7 +365,8 @@
+ 		return 0;
+ 
+ 	if (!test_bit(IS_DVFS_SEL_TABLE, &dvfs_ctrl->state)) {
+-		err("dvfs table is NOT selected");
++		if (device->sensor->ischain)	/* e850 bypass: no ischain, no DVFS table */
++			err("dvfs table is NOT selected");
+ 		return -EINVAL;
+ 	}
+ 
+--- a/drivers/media/platform/exynos/camera/is-groupmgr.c
++++ b/drivers/media/platform/exynos/camera/is-groupmgr.c
+@@ -2524,7 +2524,8 @@
+ 
+ 	if (frame->state == FS_FREE) {
+ 		if (unlikely(frame->out_flag)) {
+-			mgwarn("output(0x%lX) is NOT completed", device, group, frame->out_flag);
++			if (sensor->ischain)	/* e850 bypass: untagged VC0 frames never clear it */
++				mgwarn("output(0x%lX) is NOT completed", device, group, frame->out_flag);
+ 			frame->out_flag = 0;
+ 		}
+ 
+--- a/drivers/media/platform/exynos/camera/is-video-ssvc0.c
++++ b/drivers/media/platform/exynos/camera/is-video-ssvc0.c
+@@ -251,7 +251,7 @@
+ 	device = GET_DEVICE(vctx);
+ 
+ 	ret = is_video_poll(file, vctx, wait);
+-	if (ret)
++	if (ret & EPOLLERR)	/* e850: ret is the poll mask (65 = POLLIN|POLLRDNORM), not an error */
+ 		merr("is_video_poll is fail(%d)", device, ret);
+ 
+ 	return ret;

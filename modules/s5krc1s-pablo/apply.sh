@@ -43,5 +43,10 @@ patch -d "$K" -p1 -N -r - < "$HERE/patches/csi-err-stop-param.patch" ||
 # still wrote it), no sensor dump, no log line; fimc_is.e850_csi_crc_count counts them. 11.28.
 patch -d "$K" -p1 -N -r - < "$HERE/patches/csi-crc-keep-param.patch" ||
     patch -d "$K" -p1 -R --dry-run < "$HERE/patches/csi-crc-keep-param.patch" >/dev/null
+# Per-frame log lines that are expected without an ISP chain (bypass): the poll mask 65 (POLLIN) printed as
+# "is_video_poll is fail", "output(0x2) is NOT completed", "dvfs table is NOT selected": 106 lines/s, 81% of the
+# journal, which then kept only ~1 h 50 min (11.31). Printed only with an ischain or on POLLERR now.
+patch -d "$K" -p1 -N -r - < "$HERE/patches/quiet-bypass-log.patch" ||
+    patch -d "$K" -p1 -R --dry-run < "$HERE/patches/quiet-bypass-log.patch" >/dev/null
 grep -n 'camera/' "$K/$BOARD"
 echo "applied to $K"

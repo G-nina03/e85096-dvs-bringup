@@ -1,0 +1,41 @@
+--- a/drivers/watchdog/s3c2410_wdt.c
++++ b/drivers/watchdog/s3c2410_wdt.c
+@@ -522,19 +522,11 @@
+ static void s3c2410wdt_gettime(int index)
+ {
+ 	struct s3c2410_wdt *wdt = s3c_wdt[index];
+-	struct rtc_device *rtc;
+ 
+ 	wdt->tsk = current;
+ 	wdt->thr = current_thread_info();
+ 	wdt->last_ping_cpu = raw_smp_processor_id();
+-
+-	rtc = rtc_class_open(CONFIG_RTC_HCTOSYS_DEVICE);
+-	if (!rtc) {
+-		dev_info(wdt->dev, "Unable to open rtc device\n");
+-	} else {
+-		rtc_read_time(rtc, &wdt->tm);
+-		rtc_class_close(rtc);
+-	}
++	/* e850: no RTC read per ping (2 journal lines every 200 ms); wdt->tm is never read */
+ }
+ 
+ static int s3c2410wdt_keepalive(struct watchdog_device *wdd)
+@@ -552,7 +544,7 @@
+ 	spin_unlock_irqrestore(&wdt->lock, flags);
+ 
+ 	wtcnt = readl(wdt->reg_base + S3C2410_WTCNT);
+-	dev_info(wdt->dev,
++	dev_dbg(wdt->dev,
+ 		"Watchdog cluster %u keepalive!, old_wtcnt = %lx, wtcnt = %lx\n",
+ 		wdt->cluster, old_wtcnt, wtcnt);
+ 	if (!(wdt->in_panic || in_interrupt() || wdt->in_suspend
+@@ -984,7 +976,7 @@
+ 	spin_unlock_irqrestore(&s3c_wdt[index]->lock, flags);
+ 
+ 	wtcnt = readl(s3c_wdt[index]->reg_base + S3C2410_WTCNT);
+-	dev_info(s3c_wdt[index]->dev,
++	dev_dbg(s3c_wdt[index]->dev,
+ 		"Watchdog cluster %u keepalive!, old_wtcnt = %lx, wtcnt = %lx\n",
+ 		s3c_wdt[index]->cluster, old_wtcnt, wtcnt);
+ 	if (!(s3c_wdt[index]->in_panic || in_interrupt() || s3c_wdt[index]->in_suspend
