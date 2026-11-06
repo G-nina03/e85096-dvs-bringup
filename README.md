@@ -202,3 +202,8 @@ included.
 Samsung Electronics confidential source code, internal documentation,
 non-public register information, firmware, or NDA-protected material
 must not be committed to this repository.
+
+The S5KRC1S user manual / datasheet (Rev0.01) quoted in the DVS notes
+(register addresses, packet formats, timestamp and PLL details) and the
+vendor setfile `Delta_10_2000FPS.txt` are public material, published by the
+repository owner; quoting them here is within the rule above.

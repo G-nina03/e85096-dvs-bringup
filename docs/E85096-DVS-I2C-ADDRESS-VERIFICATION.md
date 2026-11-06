@@ -33,7 +33,7 @@ Do not confuse the sensor's silicon PAD numbering with the DVS module's 22-pin F
 
 ## Scope and source handling
 
-The user also supplied a summary attributed to a Samsung S5KRC1SY preliminary datasheet (Rev0.01, Table 8), including alternate address-selection states, die PAD numbers and a user-defined address register. Those details are **not reproduced here** pending authorization for publication in this public repository, consistent with the repository README's ban on non-public register information. The original datasheet was not uploaded.
+The S5KRC1S user manual / datasheet (Rev0.01) is public material published by the repository owner, so its contents may be quoted here (README, Disclaimer). Its alternate address-selection states, die PAD numbers and user-defined address register (Table 8) are not repeated in this note; the DVS bring-up notes ([E85096-LINUX510-BOOT.md](E85096-LINUX510-BOOT.md) 11.17-11.24) cite the manual where they use it.
 
 ## Links
 
