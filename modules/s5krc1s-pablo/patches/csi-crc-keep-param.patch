@@ -1,0 +1,60 @@
+--- a/drivers/media/platform/exynos/camera/is-device-csi_v4.c
++++ b/drivers/media/platform/exynos/camera/is-device-csi_v4.c
+@@ -818,6 +818,14 @@
+ 
+ 	v4l2_subdev_notify(subdev, data_type, frame);
+ }
++
++/* e850: 1 = a CRC error costs one packet, not the frame: no DMA abort, no error frame, no sensor dump, no log
++ * line (8500 lines/s at flush_us=50 kept journald busy); e850_csi_crc_count counts them instead (11.28) */
++#define E850_CSI_CRC (BIT(CSIS_ERR_CRC) | BIT(CSIS_ERR_MAL_CRC) | BIT(CSIS_ERR_CRC_CPHY))
++static uint e850_csi_crc_keep;
++module_param(e850_csi_crc_keep, uint, 0644);
++static uint e850_csi_crc_count;
++module_param(e850_csi_crc_count, uint, 0444);
+ 
+ static void csi_err_check(struct is_device_csi *csi, u32 *err_id, enum csis_hw_type type)
+ {
+@@ -835,12 +843,20 @@
+ 	}
+ 
+ 	/* 2. If err occurs first in 1 frame, request DMA abort */
+-	if (!prev_err_flag)
++	if (e850_csi_crc_keep) {
++		for (vc = CSI_VIRTUAL_CH_0; vc < CSI_VIRTUAL_CH_MAX; vc++)
++			if (err_id[vc] & ~E850_CSI_CRC)
++				break;
++		if (vc < CSI_VIRTUAL_CH_MAX && !prev_err_flag)
++			csi_hw_s_control(csi->cmn_reg[csi->scm][0], CSIS_CTRL_DMA_ABORT_REQ, true);
++	} else if (!prev_err_flag) {
+ 		csi_hw_s_control(csi->cmn_reg[csi->scm][0], CSIS_CTRL_DMA_ABORT_REQ, true);
++	}
+ 
+-	/* 3. Cumulative error */
++	/* 3. Cumulative error (e850: crc_keep leaves the CRC bits out, or every frame ended as an error frame and its
++	 * flush handed back the next buffer while the DMA still wrote it: empty buffers, data ~133 ms late, 11.28) */
+ 	for (vc = CSI_VIRTUAL_CH_0; vc < CSI_VIRTUAL_CH_MAX; vc++)
+-		csi->error_id[vc] |= err_id[vc];
++		csi->error_id[vc] |= err_id[vc] & ~(e850_csi_crc_keep ? E850_CSI_CRC : 0);
+ 
+ 	/* 4. VC ch0 only exception case */
+ 	err = find_first_bit((unsigned long *)&err_id[CSI_VIRTUAL_CH_0], CSIS_ERR_END);
+@@ -863,6 +879,9 @@
+ 		case CSIS_ERR_MAL_CRC:
+ 		case CSIS_ERR_CRC_CPHY:
+ 			csi->crc_flag = true;
++			e850_csi_crc_count++;
++			if (e850_csi_crc_keep)
++				break;
+ 
+ 			merr("[DMA%d][VC P%d, L%d][F%d] CSIS_ERR_CRC_XXX (ID %d)", csi,
+ 				csi->dma_subdev[CSI_VIRTUAL_CH_0]->dma_ch[csi->scm],
+@@ -873,7 +892,7 @@
+ 				&& !test_bit(CSIS_ERR_MAL_CRC, &prev_err_flag)
+ 				&& !test_bit(CSIS_ERR_CRC_CPHY, &prev_err_flag)) {
+ 				sensor = v4l2_get_subdev_hostdata(*csi->subdev);
+-				if (sensor)
++				if (sensor && !e850_csi_crc_keep)
+ 					is_sensor_dump(sensor);
+ 			}
+ 		default:

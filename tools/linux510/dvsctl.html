@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DVS 화면 조정</title>
+<style>
+  :root { --bg: #111; --panel: #1b1b1b; --fg: #e8e8e8; --dim: #9a9a9a; --accent: #4fc36a; --line: #2c2c2c; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  #view { width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 4px; display: block; object-fit: contain; }
+  #stats { color: var(--dim); font: 13px/1.5 ui-monospace, Menlo, monospace; margin-top: 8px; min-height: 3em; }
+  .row { display: grid; grid-template-columns: 7.5em 1fr 3.5em; gap: 8px; align-items: center; margin: 10px 0; }
+  .row label { color: var(--dim); }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; }
+  .row select { grid-column: 2 / 4; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  select, button { background: #262626; color: var(--fg); border: 1px solid #3a3a3a; border-radius: 6px; padding: 6px 10px; font: inherit; }
+  button:hover, select:hover { border-color: var(--accent); }
+  .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+  .hint { color: var(--dim); font-size: 13px; margin: 2px 0 0 8.1em; }
+  #msg { color: var(--dim); font-size: 13px; min-height: 1.4em; }
+  .toggle { display: flex; gap: 8px; align-items: center; color: var(--dim); margin-top: 8px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <section class="panel">
+    <h1>DVS 화면 조정</h1>
+    <img id="view" alt="지금 HDMI에 나가는 화면">
+    <div class="toggle"><input type="checkbox" id="live" checked><label for="live">미리보기 갱신 (0.5초마다)</label></div>
+    <div id="stats">통계 기다리는 중…</div>
+  </section>
+  <section class="panel">
+    <div class="presets">
+      <button data-preset="default">기본값</button>
+      <button data-preset="clean">잡음 제거</button>
+      <button data-preset="trails">잔상</button>
+      <button data-preset="full">전체 화면</button>
+    </div>
+    <div id="controls"></div>
+    <div id="msg"></div>
+  </section>
+</main>
+<script>
+const LABELS = {
+  fps: ['화면 갱신', 'fps', '초당 그리는 횟수'],
+  window_ms: ['누적 시간', 'ms', '한 장에 모아 그리는 센서 시간, 0 = 한 프레임'],
+  fade: ['잔상', '', '0 = 매번 지움, 클수록 이전 장면이 오래 남음'],
+  filter_ms: ['잡음 필터', 'ms', '이웃 픽셀이 이 시간 안에 반응한 이벤트만, 0 = 끔'],
+  color: ['색', '', ''],
+  zoom: ['크기', '', ''],
+  flip: ['뒤집기', '', ''],
+  margin_ms: ['재생 여유', 'ms', '작을수록 지연이 줄고 늦은 이벤트를 놓침'],
+};
+const CHOICES = {
+  color: ['ON 초록 / OFF 빨강', 'ON 흰색 / OFF 파랑', '모두 흰색', 'ON만', 'OFF만'],
+  zoom: ['960×720 (1배)', '1440×1080 (1.5배, 세로 꽉)'],
+  flip: ['그대로', '좌우 반전', '상하 반전', '180° 회전'],
+};
+const PRESETS = {
+  clean: { filter_ms: 4, fade: 0 },
+  trails: { fade: 200, window_ms: 0 },
+  full: { zoom: 1 },
+};
+let params = {}, pending = {}, timer = null;
+
+function show(msg) { document.getElementById('msg').textContent = msg; }
+
+function post(changes) {
+  Object.assign(pending, changes);
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    const body = JSON.stringify(pending);
+    pending = {};
+    try {
+      const r = await fetch('/params', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+      const j = await r.json();
+      if (j.params) { for (const k in j.params) params[k].v = j.params[k]; sync(); }
+      show(j.rejected && j.rejected.length ? '적용 안 됨: ' + j.rejected.join(', ') : '적용됨, 다음 실행에도 유지');
+    } catch (e) { show('보드에 연결할 수 없음: ' + e.message); }
+  }, 120);
+}
+
+function sync() {
+  for (const [k, p] of Object.entries(params)) {
+    const el = document.getElementById('p-' + k);
+    if (!el) continue;
+    el.value = p.v;
+    const out = document.getElementById('o-' + k);
+    if (out) out.textContent = p.v + (LABELS[k] ? LABELS[k][1] : '');
+  }
+}
+
+function build() {
+  const box = document.getElementById('controls');
+  box.textContent = '';
+  for (const [k, p] of Object.entries(params)) {
+    const [name, unit, hint] = LABELS[k] || [k, '', ''];
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('label');
+    lab.htmlFor = 'p-' + k;
+    lab.textContent = name;
+    row.append(lab);
+    let input;
+    if (CHOICES[k]) {
+      input = document.createElement('select');
+      CHOICES[k].forEach((text, i) => { if (i >= p.min && i <= p.max) input.add(new Option(text, i)); });
+      input.onchange = () => post({ [k]: +input.value });
+      row.append(input);
+    } else {
+      input = document.createElement('input');
+      input.type = 'range';
+      input.min = p.min; input.max = p.max; input.step = 1;
+      const out = document.createElement('output');
+      out.id = 'o-' + k;
+      input.oninput = () => { out.textContent = input.value + unit; post({ [k]: +input.value }); };
+      row.append(input, out);
+    }
+    input.id = 'p-' + k;
+    box.append(row);
+    if (hint) { const h = document.createElement('div'); h.className = 'hint'; h.textContent = hint; box.append(h); }
+  }
+  sync();
+}
+
+document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
+  const name = b.dataset.preset;
+  const changes = name === 'default'
+    ? Object.fromEntries(Object.entries(params).map(([k, p]) => [k, p.def]))
+    : PRESETS[name];
+  for (const k in changes) if (params[k]) params[k].v = changes[k];
+  sync();
+  post(changes);
+});
+
+async function refreshStats() {
+  try {
+    const s = await (await fetch('/stats')).json();
+    if (s.fps === undefined) return;
+    document.getElementById('stats').textContent =
+      `${s.fps} fps, 그리기 ${s.draw_ms} ms, 프레임당 이벤트 ${s.events}\n` +
+      `버퍼 ${s.buffers}/s, 복사 ${s.ingest_ms} ms, ${s.kb} kB/버퍼\n` +
+      `최신 이벤트보다 ${s.behind_ms} ms 늦음, 시간의 ${s.coverage}%에 데이터, 어두운 프레임 ${s.dips}장/2초`;
+    document.getElementById('stats').style.whiteSpace = 'pre-line';
+  } catch (e) { /* the next poll will tell */ }
+}
+
+const view = document.getElementById('view');
+let loading = false;
+function refreshView() {
+  if (!document.getElementById('live').checked || loading || document.hidden) return;
+  loading = true;
+  const img = new Image();
+  img.onload = () => { view.src = img.src; loading = false; };
+  img.onerror = () => { loading = false; };
+  img.src = '/frame.png?t=' + Date.now();
+}
+
+(async () => {
+  try {
+    params = await (await fetch('/params')).json();
+    build();
+  } catch (e) { show('설정을 읽을 수 없음: ' + e.message); }
+  refreshStats(); refreshView();
+  setInterval(refreshStats, 2000);
+  setInterval(refreshView, 500);
+})();
+</script>
+</body>
+</html>

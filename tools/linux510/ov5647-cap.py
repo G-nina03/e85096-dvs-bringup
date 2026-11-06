@@ -14,7 +14,8 @@ Sequence (each step was needed, see docs/E85096-LINUX510-BOOT.md 9.5-9.7):
   STREAMON vc0, STREAMON leader, then QBUF (QBUF before STREAMON hangs the group thread)
   leader meta: shot.magicNumber + node_group.capture[0] = {vid 114 (SS1VC0), request 1, crop}
   S_CTRL(IS_S_STREAM 1): sensor stream on; DQBUF vc0 frames; S_STREAM 0; STREAMOFF.
-Buffers are dma-bufs from /dev/dma_heap/system-uncached (the Pablo QBUF path wants dma-buf fds).
+Buffers are dma-bufs from /dev/dma_heap/system-uncached (the Pablo QBUF path wants dma-buf fds); VC0 with --live
+--raw8 from /dev/dma_heap/system (cached).
 
     ov5647-cap.py [-W 640] [-H 480] [-n 5] [-o /tmp/ov5647]   -> /tmp/ov5647_<i>.raw
 Each file is one VC0 frame: one little-endian u16 per pixel, 10 valid bits (raw10-view.py shows it).
@@ -22,7 +23,11 @@ Each file is one VC0 frame: one little-endian u16 per pixel, 10 valid bits (raw1
     ov5647-cap.py --live [-n 0]      live video on HDMI (/dev/fb0) instead of files; -n 0 = forever
     ov5647-cap.py --live --raw8 -W 8192 -H 127 -n 0 -b 8 -B 16
         S5KRC1S events on HDMI at --fps (30) frames/s through /usr/local/lib/libdvsview.so (dvsview.c).
-        Needs fimc_is.e850_csi_err_stop=0; is_cis_s5krc1s.flush_us=250 keeps the playout delay near 85 ms.
+        Needs fimc_is.e850_csi_err_stop=0 (tools/board/dvslive.sh sets it and the rest).
+    ... --boxes /var/lib/dvsbox/boxes.jsonl --mm-per-px 1.0
+        also measure boxes moving through the view (one at a time): one JSON line per box, label on HDMI.
+    ... --ctl 8080
+        display settings page (dvsctl.py, dvsctl.html in /usr/local/share/dvsview): http://<board>:8080/
 """
 import argparse
 import atexit
@@ -83,6 +88,10 @@ ap.add_argument('--live', action='store_true', help='draw every frame on /dev/fb
 ap.add_argument('--loud', action='store_true', help='keep console printk on (to see a hang on UART)')
 ap.add_argument('--raw8', action='store_true', help='RAW8 (S5KRC1S DVS: -W 8192 -H 127)')
 ap.add_argument('--fps', type=int, default=30, help='--live --raw8: frames drawn per second')
+ap.add_argument('--boxes', help='--live --raw8: append measured boxes to this file (JSON lines)')
+ap.add_argument('--mm-per-px', type=float, default=1.0, help='--boxes: belt-plane scale, calibrate with a known box')
+ap.add_argument('--box-window', type=int, default=5000, help='--boxes: us of events per measurement (<= 100000)')
+ap.add_argument('--ctl', type=int, default=0, help='--live --raw8: serve the display settings page on this port')
 a = ap.parse_args()
 PIX_FMT, PIX_BITS = (PIX_FMT_SBGGR8, 8) if a.raw8 else (PIX_FMT_SBGGR10, 10)
 
@@ -98,12 +107,15 @@ if a.live and a.n == 5:
     a.n = 0
 
 heap = os.open('/dev/dma_heap/system-uncached', os.O_RDWR)
+# --live --raw8 reads each 1 MB VC0 buffer: uncached that took 8-14 ms. Cached reads are fresh because Pablo unmaps
+# the buffer at DQBUF (an invalidate); libdvsview writes its zeroes back itself before QBUF (11.28)
+cached = os.open('/dev/dma_heap/system', os.O_RDWR) if a.live and a.raw8 else heap
 
 
-def heap_alloc(size):
+def heap_alloc(size, h=heap):
     d = bytearray(24)
     struct.pack_into('QII', d, 0, (size + 4095) & ~4095, 0, os.O_RDWR | os.O_CLOEXEC)
-    fcntl.ioctl(heap, DMA_HEAP_IOCTL_ALLOC, d)
+    fcntl.ioctl(h, DMA_HEAP_IOCTL_ALLOC, d)
     return struct.unpack_from('I', d, 8)[0]
 
 
@@ -132,7 +144,7 @@ class Node:
         struct.pack_into('I', b, 72, n)
         return b
 
-    def reqbufs(self, count):
+    def reqbufs(self, count, h=heap):
         req = bytearray(20)
         struct.pack_into('3I', req, 0, count, self.type, MEMORY_DMABUF)
         fcntl.ioctl(self.fd, VIDIOC_REQBUFS, req)
@@ -148,7 +160,7 @@ class Node:
                 # 2x headroom: the CSIS WDMA wrote ~1 KiB past a 640x480 RAW10 plane
                 # ("SysMMU WRITE PAGE FAULT" just after the buffer); the IOMMU maps the whole dma-buf
                 size = length * 2
-                dfd = heap_alloc(size)
+                dfd = heap_alloc(size, h)
                 planes.append((dfd, mmap.mmap(dfd, size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)))
             self.bufs.append(planes)
         log('%s: %d buffers, %d plane(s) %s' % (self.name, n, self.nplanes, self.lengths))
@@ -182,7 +194,7 @@ vc0.s_input(0)
 vc0.s_fmt(a.W, a.H)
 log('S_INPUT 0x%x, sensor size %dx%d, S_FMT %d-bit on both nodes' % (INPUT, a.W, a.H, PIX_BITS))
 ldr.reqbufs(a.B)
-vc0.reqbufs(a.b)
+vc0.reqbufs(a.b, cached)
 
 def write_shot(i):
     """Shot meta of leader buffer i. Rewritten before every QBUF: the driver clears
@@ -269,12 +281,26 @@ class DvsLive:
         self.lib = ctypes.CDLL('/usr/local/lib/libdvsview.so')
         self.lib.dvs_start.argtypes = [ctypes.c_char_p, ctypes.c_int]
         self.lib.dvs_ingest.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        self.lib.dvs_boxes.argtypes = [ctypes.c_char_p, ctypes.c_double, ctypes.c_int]
+        if a.boxes:
+            os.makedirs(os.path.dirname(os.path.abspath(a.boxes)), exist_ok=True)
+            r = self.lib.dvs_boxes(a.boxes.encode(), a.mm_per_px, a.box_window)
+            if r < 0:
+                raise OSError(-r, 'dvs_boxes: ' + os.strerror(-r))
         r = self.lib.dvs_start(b'/dev/fb0', a.fps)
         if r < 0:
             raise OSError(-r, 'dvs_start: ' + os.strerror(-r))
+        if a.ctl:
+            sys.path.append('/usr/local/share/dvsview')
+            import dvsctl
+            try:
+                dvsctl.start(self.lib, a.ctl)
+                log('display settings: http://<board>:%d/' % a.ctl)
+            except OSError as e:                # port taken: keep the live view without the page
+                log('display settings off: port %d: %s' % (a.ctl, e))
 
     def show(self, buf):
-        p = ctypes.c_char.from_buffer(buf)      # the dma-buf mmap itself: C copies it out and zeroes it
+        p = ctypes.c_char.from_buffer(buf)      # the dma-buf mmap itself: C decodes and zeroes it in place
         self.lib.dvs_ingest(ctypes.addressof(p), a.W * a.H)
         del p                                   # drop the buffer export so the mmap can close at exit
 
@@ -290,7 +316,7 @@ try:
             log('timeout: no VC0 frame in %.1f s' % a.t)
             break
         r, w, _x = select.select([vc0.fd], [ldr.fd], [], 0.2)
-        if not w:
+        if not (r or w):
             time.sleep(0.01)
         if ldr.fd in w:                          # leader (meta) buffer back: requeue it
             try:

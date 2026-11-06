@@ -38,5 +38,10 @@ patch -d "$K" -p1 -N -r - < "$HERE/patches/csi-speed-param.patch" ||
 # 0 = never. Every S5KRC1S frame has CRC errors, so live view needs 0. 11.24.
 patch -d "$K" -p1 -N -r - < "$HERE/patches/csi-err-stop-param.patch" ||
     patch -d "$K" -p1 -R --dry-run < "$HERE/patches/csi-err-stop-param.patch" >/dev/null
+# fimc_is.e850_csi_crc_keep: 1 = a CRC error is no frame error: no VC DMA abort (it dropped the rest of every frame,
+# ~14% of the sensor time reached memory, 11.27), no error-frame flush (it handed back the next buffer while the DMA
+# still wrote it), no sensor dump, no log line; fimc_is.e850_csi_crc_count counts them. 11.28.
+patch -d "$K" -p1 -N -r - < "$HERE/patches/csi-crc-keep-param.patch" ||
+    patch -d "$K" -p1 -R --dry-run < "$HERE/patches/csi-crc-keep-param.patch" >/dev/null
 grep -n 'camera/' "$K/$BOARD"
 echo "applied to $K"
