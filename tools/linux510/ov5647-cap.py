@@ -20,7 +20,9 @@ Buffers are dma-bufs from /dev/dma_heap/system-uncached (the Pablo QBUF path wan
 Each file is one VC0 frame: one little-endian u16 per pixel, 10 valid bits (raw10-view.py shows it).
 
     ov5647-cap.py --live [-n 0]      live video on HDMI (/dev/fb0) instead of files; -n 0 = forever
-    ov5647-cap.py --live --raw8 -W 8192 -H 127 -n 0 -b 8 -B 16   S5KRC1S events on HDMI (needs fimc_is.e850_csi_err_stop=0; is_cis_s5krc1s.flush_us=250 for ~11 draws/s)
+    ov5647-cap.py --live --raw8 -W 8192 -H 127 -n 0 -b 8 -B 16
+        S5KRC1S events on HDMI at --fps (30) frames/s through /usr/local/lib/libdvsview.so (dvsview.c).
+        Needs fimc_is.e850_csi_err_stop=0; is_cis_s5krc1s.flush_us=250 keeps the playout delay near 85 ms.
 """
 import argparse
 import atexit
@@ -80,6 +82,7 @@ ap.add_argument('-v', action='store_true', help='log every ioctl in the loop')
 ap.add_argument('--live', action='store_true', help='draw every frame on /dev/fb0, save nothing')
 ap.add_argument('--loud', action='store_true', help='keep console printk on (to see a hang on UART)')
 ap.add_argument('--raw8', action='store_true', help='RAW8 (S5KRC1S DVS: -W 8192 -H 127)')
+ap.add_argument('--fps', type=int, default=30, help='--live --raw8: frames drawn per second')
 a = ap.parse_args()
 PIX_FMT, PIX_BITS = (PIX_FMT_SBGGR8, 8) if a.raw8 else (PIX_FMT_SBGGR10, 10)
 
@@ -259,79 +262,21 @@ class Live:
 
 
 class DvsLive:
-    """S5KRC1S compressed AER buffer (32-bit big-endian packets, manual Fig. 49-52) as a 960x720 event
-    image: ON events green, OFF red, on black, centred on /dev/fb0. One VC0 buffer = all its frames."""
-    XS, YS = 960, 720
+    """S5KRC1S events on /dev/fb0 at --fps frames/s: libdvsview.so (dvsview.c, 11.27) decodes each VC0 buffer
+    with the GIL released and draws, from its own thread, one frame period of events by sensor timestamp."""
 
     def __init__(self):
-        import numpy as np
-        self.np = np
-        fd = os.open('/dev/fb0', os.O_RDWR)
-        var = bytearray(160)
-        fcntl.ioctl(fd, 0x4600, var)                 # FBIOGET_VSCREENINFO
-        xres, yres, _, yv = struct.unpack_from('4I', var)
-        yoff = struct.unpack_from('I', var, 20)[0]
-        stride = int(open('/sys/class/graphics/fb0/stride').read())
-        self.fbmap = mmap.mmap(fd, stride * yv, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
-        fb = np.frombuffer(self.fbmap, np.uint8).reshape(yv, stride)
-        x0, y0 = (xres - self.XS) // 2, yoff + (yres - self.YS) // 2
-        self.win = fb[y0:y0 + self.YS, x0 * 4:(x0 + self.XS) * 4].view('<u4')
-        self.n = self.got = 0
-        self.pending = []
-        self.t = time.time()
-        import threading
-        self.ready = threading.Event()
-        threading.Thread(target=self.draw, daemon=True).start()
-
-    def events(self, w):
-        """-> x, y, off (bool) arrays for every event pixel in the packet words w (>u4)."""
-        np = self.np
-        i = np.arange(len(w))
-        last_col = np.maximum.accumulate(np.where(w >> 26 == 1, i, 0))
-        x = (w[last_col] & 0x7ff).astype(np.int32)
-        g = (w >> 31 == 1) & (w[last_col] >> 26 == 1)
-        w, x = w[g], x[g]
-        offs = (w >> 26) & 0x1f
-        a1 = ((w >> 18) & 0x7f).astype(np.int32)
-        sg = offs == 0
-        # SGROUP: [7:0] ON, [15:8] OFF of one group. MGROUP: [7:0] group1, [15:8] group1+offset, polarity bits 16/17
-        base = np.concatenate([a1, a1 + offs]) * 8
-        off = np.concatenate([~sg & (w >> 16 & 1 == 1), sg | (w >> 17 & 1 == 1)])
-        bits = np.concatenate([w & 0xff, (w >> 8) & 0xff]).astype(np.uint8)
-        xx = np.concatenate([x, x])
-        m = np.unpackbits(bits[:, None], axis=1, bitorder='little').astype(bool)   # (n, 8): row in group
-        y = (base[:, None] + np.arange(8))[m]
-        xx, off = np.broadcast_to(xx[:, None], m.shape)[m], np.broadcast_to(off[:, None], m.shape)[m]
-        ok = (xx < self.XS) & (y < self.YS)
-        return xx[ok], y[ok], off[ok]
+        self.lib = ctypes.CDLL('/usr/local/lib/libdvsview.so')
+        self.lib.dvs_start.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        self.lib.dvs_ingest.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        r = self.lib.dvs_start(b'/dev/fb0', a.fps)
+        if r < 0:
+            raise OSError(-r, 'dvs_start: ' + os.strerror(-r))
 
     def show(self, buf):
-        """Called in the capture loop: copy and clear only. A decode takes ~250 ms against a ~25 ms
-        MIPI frame (11.24); the thread decodes every buffer that came in since its last draw, so none is lost."""
-        raw = bytes(buf[:a.W * a.H])                       # one read of the uncached dma-buf (7 ms)
-        buf[:a.W * a.H] = bytes(a.W * a.H)                 # bytesused is 0: clear so stale packets do not repeat
-        k = len(raw.rstrip(b'\0'))                         # a short frame (cis packets < 127) fills only the top
-        self.pending.append(raw[:(k + 3) & ~3])
-        self.got += 1
-        self.ready.set()
-
-    def draw(self):
-        np = self.np
-        while True:
-            self.ready.wait()
-            self.ready.clear()
-            batch, self.pending = self.pending, []
-            data = b''.join(batch)[-4 << 20:]                # shortcut: >4 MB behind keeps the newest only
-            x, y, off = self.events(np.frombuffer(data[len(data) & 3:], '>u4'))
-            img = np.full((self.YS, self.XS), 0xff000000, np.uint32)
-            img[y, x] = np.where(off, 0xffff0000, 0xff00ff00)
-            self.win[:] = img
-            self.n += 1
-            if self.n % 10 == 0:
-                now = time.time()
-                log('dvs live: %d buffers in, %d drawn, %.1f draws/s, last draw %d buffers %d kB %d events' % (
-                    self.got, self.n, 10 / (now - self.t), len(batch), len(data) >> 10, len(x)))
-                self.t = now
+        p = ctypes.c_char.from_buffer(buf)      # the dma-buf mmap itself: C copies it out and zeroes it
+        self.lib.dvs_ingest(ctypes.addressof(p), a.W * a.H)
+        del p                                   # drop the buffer export so the mmap can close at exit
 
 
 live = (DvsLive() if a.raw8 else Live(a.W, a.H)) if a.live else None
