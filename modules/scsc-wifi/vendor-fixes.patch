@@ -1,0 +1,39 @@
+--- a/drivers/net/wireless/scsc/dev.c
++++ b/drivers/net/wireless/scsc/dev.c
+@@ -296,18 +296,20 @@
+ 
+ void slsi_add_log_to_system_error_buffer(struct slsi_dev *sdev, char *input_buffer)
+ {
+-	int pos = sdev->sys_error_log_buf.pos;
+-	int buf_size = sdev->sys_error_log_buf.log_buf_size - pos;
++	int pos, buf_size;
+ 	u32 time[2] = { 0 };
+ 
+ 	get_kernel_timestamp(time);
+ 	mutex_lock(&sdev->sys_error_log_buf.log_buf_mutex);
+-	sdev->sys_error_log_buf.pos += scnprintf(sdev->sys_error_log_buf.log_buf + pos, buf_size - pos, "[%d.%d] ", time[0], time[1]);
++	/* e850: pos read under the lock; buf_size is already what is left (was "buf_size - pos": negative past 2 KB, vsnprintf WARN) */
++	pos = sdev->sys_error_log_buf.pos;
++	buf_size = sdev->sys_error_log_buf.log_buf_size - pos;
++	sdev->sys_error_log_buf.pos += scnprintf(sdev->sys_error_log_buf.log_buf + pos, buf_size, "[%d.%d] ", time[0], time[1]);
+ 
+ 	pos = sdev->sys_error_log_buf.pos;
+ 	buf_size = sdev->sys_error_log_buf.log_buf_size - pos;
+ 
+-	sdev->sys_error_log_buf.pos += scnprintf(sdev->sys_error_log_buf.log_buf + pos, buf_size - pos, input_buffer);
++	sdev->sys_error_log_buf.pos += scnprintf(sdev->sys_error_log_buf.log_buf + pos, buf_size, "%s", input_buffer);
+ 	mutex_unlock(&sdev->sys_error_log_buf.log_buf_mutex);
+ }
+ 
+--- a/drivers/misc/samsung/scsc/mxproc.c
++++ b/drivers/misc/samsung/scsc/mxproc.c
+@@ -436,7 +436,8 @@
+ 	mxproc->procfs_ctrl_dir_num = proc_count;
+ 	MX_PROCFS_ADD_FILE(mxproc, mx_fail, parent, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+ 	MX_PROCFS_ADD_FILE(mxproc, mx_freeze, parent, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+-	MX_PROCFS_ADD_FILE(mxproc, mx_panic, parent, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
++	/* e850: root only (was 0666): even a read forces a FW panic */
++	MX_PROCFS_ADD_FILE(mxproc, mx_panic, parent, S_IRUSR | S_IWUSR);
+ 	MX_PROCFS_ADD_FILE(mxproc, mx_suspend, parent, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+ 	MX_PROCFS_ADD_FILE(mxproc, mx_suspend_count, parent, S_IRUSR | S_IRGRP | S_IROTH);
+ 	MX_PROCFS_ADD_FILE(mxproc, mx_recovery_count, parent, S_IRUSR | S_IRGRP | S_IROTH);

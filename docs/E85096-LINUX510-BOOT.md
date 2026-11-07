@@ -2392,3 +2392,54 @@ Mac: `~/e850-logs/wifi/`(`panic0634-full.txt`, `rec1/`: `web.log`, `state.log`, 
 | `/lib/modules/.../e850-vbus.ko` | gadget 기다림(0990ffa3…). 이전: `/root/e850-vbus.ko.prev-11.32`(d011b3b8) |
 | 재부팅 | 08:14(fimc-is), 08:27(boot-dvs3), 08:33~08:37 `systemctl reboot` 3번, 08:45 워치독 리셋 1번(`to-fastboot`) |
 | `e850-vbus` | 08:38 ACM에서 `rmmod`(ACM 끊김), 08:41 ssh에서 `modprobe`(돌아옴), 08:44 ssh에서 `rmmod; modprobe`(끊겼다가 돌아옴) |
+
+### 11.33 Wi-Fi vendor 버그 2개: system error log 크기(vsnprintf WARN), `mx_panic` 0666 (2026-11-07)
+
+서비스 작업 전 안정화의 3단계다. 11.31에서 찾은 vendor 드라이버 버그 두 개를 고쳤다.
+
+**버그(소스로 확인).**
+- `scsc_wlan`의 `dev.c` `slsi_add_log_to_system_error_buffer()`:
+  - `buf_size`는 이미 `log_buf_size − pos`(남은 크기)다. 그런데 `scnprintf(…, buf_size - pos, …)`로 한 번 더 뺐다.
+  - 4 KB 버퍼에 2 KB가 넘게 쌓이면 크기가 음수가 된다. `vsnprintf`가 `WARN_ON_ONCE(size > INT_MAX)`를 내고 0을 돌려준다. 11.31에서는 4번째 복구 때 났다.
+  - 메모리는 넘치지 않았다. 대신 그 뒤의 기록이 버려졌다.
+  - 함께 고친 것:
+    - 두 번째 `scnprintf`가 메시지를 형식 문자열로 썼다. 메시지에 `%`가 들어가면 엉뚱한 메모리를 읽는다.
+    - `pos`를 mutex 밖에서 읽었다.
+  - 버퍼를 비우는 곳은 `mgt.c`의 vendor 명령(Android HAL)뿐이다. 그래서 이제는 4 KB가 차면 기록이 멈춘다(WARN 없음).
+- `scsc_mx`의 `mxproc.c`: `/proc/driver/mxman_ctrl0/mx_panic`이 0666(소유자 root)이었다.
+  - 읽기만 해도 `mxman_force_panic()`이 돈다(vendor 주석: "allow test in user builds").
+  - 그래서 아무 사용자나, `/proc`를 훑는 프로그램도 Wi-Fi 펌웨어를 패닉시킬 수 있었다.
+  - 0600(root만)으로 바꿨다. 읽어도 패닉하는 동작은 그대로 두었다.
+  - 다른 제어 파일(`mx_fail`, `mx_freeze`, `mx_suspend`)은 0664이고 소유자가 root:root다. 일반 사용자는 쓸 수 없어서 두었다.
+
+**바꾼 것.**
+- `modules/scsc-wifi/vendor-fixes.patch`와 `apply.sh`를 새로 만들었다. 커널 볼륨에 적용했다(다시 돌려도 됨).
+- `make modules`: `mxproc.o`와 `dev.o`만 다시 컴파일됐다(`~/e850-logs/build-1133scsc.log`).
+- strip한 `scsc_mx.ko`(ee2b5944…)와 `scsc_wlan.ko`(a02d408e…)를 rootfs `/lib/modules/.../`에 넣었다.
+  - 이전 판은 `/root/scsc_mx.ko.prev-11.33`(8e5b6760), `/root/scsc_wlan.ko.prev-11.33`(fca97188)이다.
+  - 이 모듈은 switch_root 뒤 `e850-wifi.service`가 rootfs에서 올린다(initramfs에서는 `autoload.deny`의 `^scsc_`로 뺀다). 부트 이미지는 바꾸지 않았다. initramfs의 scsc 사본은 옛 판이지만 쓰이지 않는다.
+- 08:58 KST에 재부팅했다.
+
+**시험(측정).**
+- `mx_panic`은 `-rw------- root root`다. philip으로 `cat`과 `echo 1 >`를 해 보니 둘 다 `Permission denied`였다. 복구 횟수는 0 그대로였다(패닉 안 남).
+- root(ACM)로 강제 패닉 9번(`tools/board/wifi-panicloop.sh 9`, 패닉 사이 8초):
+  - `mx_recovery_count`는 9가 됐고, `mx_lastpanic`은 `0xf0`이었다.
+  - 2~9번째: 쓰고 나서 `wlan0` COMPLETED + IPv4까지 6.3~6.7초였다. 6번째만 9.5초였다. 1번째 시간은 ACM 출력에서 명령 줄과 붙어 잘렸다.
+  - 시험 동안 커널 `WARNING:`은 **0줄**이었다.
+  - 11.31에서는 4번째 복구 때 WARN이 났다. 그렇다면 복구 한 번에 500 B 넘게 쌓인다. 9번이면 4 KB를 넘었을 것으로 본다(버퍼 위치는 읽을 방법이 없어 추정이다).
+- 이 부팅의 커널 WARN 13줄은 모두 `v4l_querycap`(`v4l2-ioctl.c:1108`, udev `v4l_id`가 카메라 노드를 열 때)이다.
+  - 부팅 때마다 나는 원래 WARN이다. taint W는 이것 때문에 처음부터 켜져 있다.
+  - 고치지 않았다.
+- 시험 뒤: `dvslive`, `e850-wifi`, `nginx`, `e850-hdmi` active. 8080 `/stats` fps 104, crc 0.
+- 카메라 `frame is drop`/`interrupt lost`가 13줄 났다. 11.31에서 본 복구 중 부작용과 같다(장치 IRQ가 모두 CPU0).
+- 이 부팅에서도 `e850-vbus: … after 0 ms`였다(boot-dvs3로 6번째 부팅).
+
+**보드에 바꾼 것.**
+
+| 경로 | 변경 |
+|---|---|
+| `/lib/modules/.../scsc_mx.ko` | `mx_panic` 0600(ee2b5944…). 이전: `/root/scsc_mx.ko.prev-11.33`(8e5b6760) |
+| `/lib/modules/.../scsc_wlan.ko` | system error log 크기·형식 문자열·lock(a02d408e…). 이전: `/root/scsc_wlan.ko.prev-11.33`(fca97188) |
+| 재부팅 | 08:58 KST |
+| Wi-Fi 펌웨어 | 09:00:28~09:02:26 KST 강제 패닉 9번, 모두 복구 |
+| `/var/tmp/wifi-panicloop.sh` | 강제 패닉 반복 시험(`tools/board/wifi-panicloop.sh`와 같음) |
