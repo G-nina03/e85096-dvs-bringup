@@ -1,4 +1,4 @@
-# E850-96 bring-up 현재 상태 (2026-11-02)
+# E850-96 bring-up 현재 상태 (2026-11-07)
 
 이 문서는 새 세션에서 바로 이어서 일할 수 있도록 지금 상태를 정리한 것이다. 경과와 측정 결과는 [E85096-LINUX510-BOOT.md](E85096-LINUX510-BOOT.md) 11장에, 대화 요약은 [SESSION-LOG-20261101-02.md](SESSION-LOG-20261101-02.md)에 있다.
 
@@ -13,6 +13,7 @@
 | 코어 배치 | 장치 IRQ는 모두 CPU0. live: 그리기 약 0.75코어, 캡처·디코드 0.13~0.19. **CPU7은 웹 페이지 전용**(`dvs-web` 스레드, uclamp.min 1024로 돌 때만 최고 클럭). systemd 전체는 CPU0~6(`e850-cpu7.conf`). 측정: `tools/board/cpumap-cap.sh` + `tools/host/cpumap.py` | 11.30 |
 | 카메라 OV5647 | 55~63 fps(VTS 수정, 캡처 중 printk 끔). **2026-11-06 사용자가 떼어 내고 DVS 센서로 교체했다** | 11.10 |
 | DVS 센서 S5KRC1S | I2C 확인: `i2c-7`(HSI2C2) 주소 0x10, 0x303B 쓰기/읽기 OK. 전원은 `modules/dvs-power`(LDO32 + RSTN GPC0[2]). 매뉴얼에 칩 ID 레지스터 없음, 0x36도 응답(정체 모름). Pablo CIS 드라이버 `modules/s5krc1s-pablo`(OV5647과 같은 ISP 우회) 빌드, boot-dvs로 부팅. 드라이버로 전원·I2C·stream on까지 동작. Delta_10_2000FPS setfile로 **CSIS가 MIPI 프레임을 받는다**(F38/3 s). 하지만 DMA done이 없어 VC0 프레임은 사용자 공간에 0개, stop 시 VRESOL_MISMATCH·OVERFLOW. overflow 패닉은 껐다. 스트림 도중 I2C 쓰기나 insmod를 한 시험에서 soft lockup이 두 번 났다(전원 재투입 필요). 1000 FPS 시도(`to_scnt1`=1999)는 아직 효과를 측정하지 못했다. IRQ 폭주 원인은 CSIS v1.2가 VRESOL 오류 상태를 지우지 않은 것이었다(패치로 수정). devfreq를 최대로 하면 **DVS 이벤트가 사용자 공간에 온다**(`tools/host/dvsdecode.py`로 AER 패킷 확인). 남은 문제: CRC 오류(1499 Mbps 수신 설정에서 줄지만 남음), 매뉴얼에 없는 패킷 type 000000/000101(손상인지 미확정). 캡처는 `dvscap.sh`. 타임스탬프로 잰 실제 프레임 간격은 494 µs(약 2024 fps)라서 1000 FPS 설정은 효과가 없다. 오류 10프레임이면 CSIS를 끄는 vendor 동작을 `fimc_is.e850_csi_err_stop=0`으로 풀었고, **`ov5647-cap.py --live --raw8`로 HDMI에 이벤트 영상(ON 초록/OFF 빨강)을 계속 띄운다**(`is_cis_s5krc1s.flush_us=250`이면 초당 약 11번 갱신, 11.25. to_scnt1은 프레임 주기가 아니라 MIPI flush 타임아웃이라 999로 되돌림) 32줄 모드(mode1)는 System MMU fault 패닉으로 보류(11.26). 디코딩·렌더를 C(`libdvsview.so`)로 옮겨 HDMI **30 fps**, 디코딩 5.2 ms/MB(numpy의 약 45배). 하지만 버퍼에 센서 시간의 약 14%만 들어온다(CRC 시 DMA abort로 추정, 11.27). **11.28: 화면 깜빡임의 세 원인을 고쳤다.** ① CRC 비트가 `error_id`에 쌓여 프레임마다 오류 flush(fimc-is 패치) ② 링크가 워드의 종류 비트 31~26을 지워 SUB 타임스탬프가 256 ms씩 사라짐(디코더가 복구) ③ 커널 볼륨에 남아 있던 EMERG 디버그 printk가 5초마다 CPU0 인터럽트 안에서 UART로 나가 프레임 손실(지움). 지금 live는 초당 68버퍼, 2초 커버리지 93~100%, 지연 21~24 ms, 어두운 프레임 0장(3분). 화면 조정 앱 `http://192.168.0.236:8080/`(인증 없음). CRC 오류는 초당 약 8700개로 그대로다(링크 문제로 추정). **11.29: CRC 원인은 센서 D-PHY PLL M(0x30A6)이었다.** vendor 0x8D는 줄마다 CRC였고, 0x72~0x78에서는 CRC 0, 깨진 워드 0이다. setfile을 0x75로 바꾸고 재부팅한 뒤 3분 동안 CRC 0개였다(0x70·0x7C·0x80은 데이터 없음, 0x7A는 CRC, 좁은 구간이라 장시간 안정성은 미측정). scan 속도는 `is_cis_s5krc1s.margin`(DTAG_FRM_MARGIN)으로 정한다. 주기는 430 + 32.4 × margin µs이고, 기본 17은 985 µs(1015 fps)다. 디코더가 scan 주기를 직접 잰다. **웹 서비스 `dvslive.service`(부팅 때 시작): `http://192.168.0.236:8080/`**, 미리보기 기본 10 fps(PNG는 C로 만들어 보드 안에서 34 ms), 센서 scan 속도·MIPI flush를 바꾸면 스트림을 다시 시작, 인증 없음. **11.30: 웹을 CPU7 전용으로 하고 keep-alive·TCP_NODELAY를 켜서 Wi-Fi 응답이 104~113 → 28~40 ms**(링크 상태에 따라), 미리보기 20/30 fps 추가 | 11.17~11.30 |
+| 상자 크기 측정 | **다음 세션의 첫 작업(3장 1번).** 목표는 컨베이어 위 상자를 1.5 m에서 보고 가로·세로·높이를 재는 것이다. 1차 시험에서 손에 든 상자는 재지 못했다. hull이 손과 팔까지 묶었다. 기록 80개는 제각각이었다. 다음 방향은 사용자 결정 대기다 | 11.35 |
 | HDMI 콘솔 색 | 흰 글씨. dpu.ko 패치로 근본 수정했다(`e850-fbpal`과 rebind는 쓰지 않음). 전원을 껐다 켠 뒤에도 사용자가 화면에서 확인했다 | 11.14~11.16 |
 | HDMI 출력 꺼짐 | 해결. `decon_release()`가 fb0를 닫을 때마다 DECON을 끄던 것을 open 수 세기로 고쳤다(dpu.ko 재빌드) | 11.15 |
 | 네트워크 | Wi-Fi 192.168.0.236(ssh), USB NCM 192.168.7.1. **Wi-Fi 펌웨어 패닉 2번**(2026-11-07, 부팅 후 2.6시간과 6분, `WLBT FW PANIC: 0x04`, 원인 모름·재현 못 함). **11.31부터 자동 복구를 켰다**(`e850-wifi.sh`가 `disable_recovery_handling=0`). 강제 패닉 4번(런타임 설정)과 1번(부팅 설정) 모두 복구, `wlan0` 재연결 5.6~6.5초, 8080 응답 5.6~7.3초. 복구 횟수는 `/proc/driver/mxman_ctrl0/mx_recovery_count`. **11.32: journal을 초당 130줄 → 분당 38줄로 줄였다**(카메라 bypass 경고, 워치독 keepalive). journal은 약 2주 남는다(추정). 11.33: vendor 버그 2개 수정(`mx_panic` 0600, system error log WARN) | 11.5, 11.30, 11.31, 11.32, 11.33 |
@@ -98,6 +99,7 @@
 | `/lib/modules/.../fimc-is.ko` | 2026-11-07 bypass 경고 로그 끔(f1e7bbf3…, 11.32), querycap WARN 수정(ca6c8863…, 11.34, taint W 없어짐). 이전: `/root/fimc-is.ko.prev-11.34`(f1e7bbf3), `.prev-11.31`(099c323b) |
 | `/lib/modules/.../s3c2410_wdt.ko`, `e850-vbus.ko` | 2026-11-07 boot-dvs3와 같은 판(dfd6bae7…, 0990ffa3…, 11.32). 이전: `/root/*.ko.prev-11.32` |
 | `/lib/modules/.../scsc_mx.ko`, `scsc_wlan.ko` | 2026-11-07 `mx_panic` 0600, system error log 크기 버그 수정(ee2b5944…, a02d408e…, 11.33). 이전: `/root/scsc_*.ko.prev-11.33` |
+| `/var/tmp/boxbench/boxes.jsonl` | 추가(11.35). 상자 측정 1차 시험 기록. 지워도 된다 |
 | `/etc/sysctl.d/90-e850-autoreboot.conf` | 추가(11.22). `softlockup_panic=1`, `panic=5` |
 | `/root/csis-irqstat.ko` | 추가(11.22). kretprobe IRQ 계수기, 캡처 전에 insmod하고 끝나면 rmmod |
 | `/usr/local/bin/dvscap.sh` | 추가(11.23). devfreq 최대 + 캡처 + IRQ 계수 |
@@ -105,9 +107,17 @@
 | `/root/` | 시험용 스크립트 `ovreg.py`, `hp.sh`, `fbhist.py`, `stress1h.sh`, `.ko` 사본 |
 | 계정 / Wi-Fi | `philip` 계정. Wi-Fi는 PSK 해시만 보드에 있음(저장소에는 없음) |
 
-## 3. 다음에 할 실험 3개
+## 3. 다음에 할 실험
 
-1. **HDMI 색 유지 시험 (위험 낮음, 재부팅 없음)**
+1. **상자 크기 측정 (다음 세션에서 이어서 한다)**
+   - 요구 사항, 높이 설계 구상, 1차 시험 결과는 11.35에 있다. 요구 사항은 1.5 m, 위에서 수직, ±1~2 cm, 파일 + HDMI + 웹, 시험 상자 19×15×5 cm다.
+   - 1차 시험: 손에 든 상자를 사람 앞에서 옮겼다. 기존 `dvs_boxes()`가 상자와 손·팔을 한 덩어리로 묶었다. 상자를 옮기기 전에도 사람의 움직임을 상자로 기록했다.
+   - 할 일:
+     1. 11.35 "다음 방향" 1~3 중 하나를 사용자에게 고르게 한다. 권장은 1번이다. 상자를 판 위에 놓고 막대로 밀고, 사람은 화면 밖에 있는다.
+     2. 그 방향으로 spec을 쓴다. 위치는 `docs/superpowers/specs/2026-11-07-box-measure-design.md`이고 1단계 가로·세로, 2단계 높이다. 사용자 승인을 받은 뒤 구현 계획을 쓴다. 승인 전에는 구현 코드를 쓰지 않는다.
+     3. mm로 재기 전에 `--mm-per-px`를 보정한다. 렌즈 화각을 모르므로 크기를 아는 물체로 잰다.
+   - 시험 띄우기와 되돌리기 명령은 11.35 "시험 방법"에 있다. `dvslive`를 멈추고 `systemd-run`으로 띄운다.
+2. **HDMI 색 유지 시험 (위험 낮음, 재부팅 없음)**
    - `restart e850-hdmi`와 fb0 열고 닫기는 11.15에서 확인했다. 나머지가 남았다.
    - 할 일: `fbhist.py`로 색을 측정하면서 다음 상황을 차례로 만든다.
      - `systemctl restart e850-hdmi`
@@ -116,7 +126,7 @@
      - `ov5647-cap.py --live`를 실행했다 끝내기
    - 판정: 매번 배경 0x000000, 글자 0xffffff인지 본다.
    - 2.2의 가설 1·2를 확인하는 실험이다.
-2. **Wi-Fi 펌웨어 패닉 원인 (자동 복구는 11.31에서 켰다)**
+3. **Wi-Fi 펌웨어 패닉 원인 (자동 복구는 11.31에서 켰다)**
    - 11.31에서 한 것: 자동 복구 켬(강제 패닉 4번 모두 복구, 5.6~6.5초). 큰 송수신 약 1.1 GB, 재결합, roaming 11분 동안 재현 0번. 0x04는 펌웨어 내부 번호라 호스트 소스에 뜻이 없다.
    - 할 일:
      - 패닉이 났는지는 `mx_recovery_count`로 본다. 났으면 `journalctl -g 'WLBT FW PANIC|panic_record'`로 기록을 꺼낸다. 11.32부터 journal이 약 2주 남는다(추정).
@@ -124,7 +134,7 @@
      - `e850-vbus` 경합(11.31)은 11.32에서 고쳤다. 다만 기다리는 경로가 실제로 돈 부팅(`after N ms`, N > 0)은 아직 없다. 부팅할 때마다 `dmesg | grep e850-vbus`를 본다.
      - vendor 버그 `vsnprintf` WARN(`scsc_wlan`)과 `mx_panic` 0666 권한(`scsc_mx`)은 11.33에서 고쳤다. 강제 패닉 9번 모두 복구, WARN 0줄.
    - (전 2번 "dpu 드라이버 근본 수정"은 11.15, 11.16에서 끝났다.)
-3. **YOLO nano CPU 추론 벤치마크 (보드 변경은 패키지 설치뿐)**
+4. **YOLO nano CPU 추론 벤치마크 (보드 변경은 패키지 설치뿐)**
    - 할 일: ncnn 또는 ONNX Runtime으로 YOLOv8n/YOLO11n(모델은 사용자 확인 필요)을 8코어에서 돌린다. 320과 640 입력에서 fps와 온도를 잰다.
    - 이 결과로 카메라 → 추론 → HDMI 파이프라인을 어떻게 짤지 정한다.
 
@@ -133,5 +143,5 @@
 ## 4. 사용자 결정 대기
 
 - Apache 포트: nginx를 끄고 Apache를 80번에 올릴지, Apache를 8080에서 따로 띄울지. **DVS 웹 서비스(`dvslive.service`, 11.29)가 부팅 때부터 8080을 쓴다(인증 없음).** Apache를 8080에 올리면 앱은 페이지 없이 live만 돈다. `dvslive.sh`의 `CTL_PORT`로 앱 포트를 바꿀 수 있다
-- 상자 측정과 MySQL 저장: 사용자 지시로 보류(코드는 `--boxes`로만 켜짐)
+- 상자 측정: 11.35 "다음 방향" 1~3 중 선택(3장 1번). MySQL 저장은 계속 보류다
 - YOLO 모델 종류와 입력 크기
