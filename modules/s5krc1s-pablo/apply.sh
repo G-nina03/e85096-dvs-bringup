@@ -45,8 +45,12 @@ patch -d "$K" -p1 -N -r - < "$HERE/patches/csi-crc-keep-param.patch" ||
     patch -d "$K" -p1 -R --dry-run < "$HERE/patches/csi-crc-keep-param.patch" >/dev/null
 # Per-frame log lines that are expected without an ISP chain (bypass): the poll mask 65 (POLLIN) printed as
 # "is_video_poll is fail", "output(0x2) is NOT completed", "dvfs table is NOT selected": 106 lines/s, 81% of the
-# journal, which then kept only ~1 h 50 min (11.31). Printed only with an ischain or on POLLERR now.
+# journal, which then kept only ~1 h 50 min (11.32). Printed only with an ischain or on POLLERR now.
 patch -d "$K" -p1 -N -r - < "$HERE/patches/quiet-bypass-log.patch" ||
     patch -d "$K" -p1 -R --dry-run < "$HERE/patches/quiet-bypass-log.patch" >/dev/null
+# VIDIOC_QUERYCAP: the vendor querycap did "device_caps |= capabilities", which adds V4L2_CAP_DEVICE_CAPS, so
+# v4l_querycap() WARNed on every call (udev v4l_id: 13 backtraces per boot, taint W). 11.34.
+patch -d "$K" -p1 -N -r - < "$HERE/patches/querycap-device-caps.patch" ||
+    patch -d "$K" -p1 -R --dry-run < "$HERE/patches/querycap-device-caps.patch" >/dev/null
 grep -n 'camera/' "$K/$BOARD"
 echo "applied to $K"

@@ -1,0 +1,280 @@
+--- a/drivers/media/platform/exynos/camera/is-video-3aa.c
++++ b/drivers/media/platform/exynos/camera/is-video-3aa.c
+@@ -363,7 +363,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_OUTPUT
+ 			| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-3aac.c
++++ b/drivers/media/platform/exynos/camera/is-video-3aac.c
+@@ -354,7 +354,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-3aaf.c
++++ b/drivers/media/platform/exynos/camera/is-video-3aaf.c
+@@ -354,7 +354,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-3aag.c
++++ b/drivers/media/platform/exynos/camera/is-video-3aag.c
+@@ -354,7 +354,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-3aal.c
++++ b/drivers/media/platform/exynos/camera/is-video-3aal.c
+@@ -356,7 +356,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-3aao.c
++++ b/drivers/media/platform/exynos/camera/is-video-3aao.c
+@@ -356,7 +356,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-3aap.c
++++ b/drivers/media/platform/exynos/camera/is-video-3aap.c
+@@ -355,7 +355,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-clh.c
++++ b/drivers/media/platform/exynos/camera/is-video-clh.c
+@@ -261,7 +261,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 				| V4L2_CAP_VIDEO_OUTPUT
+ 				| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-isp.c
++++ b/drivers/media/platform/exynos/camera/is-video-isp.c
+@@ -292,7 +292,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 				| V4L2_CAP_VIDEO_OUTPUT
+ 				| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ispc.c
++++ b/drivers/media/platform/exynos/camera/is-video-ispc.c
+@@ -290,7 +290,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ispg.c
++++ b/drivers/media/platform/exynos/camera/is-video-ispg.c
+@@ -268,7 +268,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_OUTPUT
+ 			| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ispp.c
++++ b/drivers/media/platform/exynos/camera/is-video-ispp.c
+@@ -291,7 +291,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ispt.c
++++ b/drivers/media/platform/exynos/camera/is-video-ispt.c
+@@ -267,7 +267,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 				| V4L2_CAP_VIDEO_OUTPUT
+ 				| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ispv.c
++++ b/drivers/media/platform/exynos/camera/is-video-ispv.c
+@@ -268,7 +268,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ispw.c
++++ b/drivers/media/platform/exynos/camera/is-video-ispw.c
+@@ -268,7 +268,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-lme.c
++++ b/drivers/media/platform/exynos/camera/is-video-lme.c
+@@ -184,7 +184,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 				| V4L2_CAP_VIDEO_OUTPUT
+ 				| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-mcs.c
++++ b/drivers/media/platform/exynos/camera/is-video-mcs.c
+@@ -296,7 +296,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_OUTPUT
+ 			| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-mcsp.c
++++ b/drivers/media/platform/exynos/camera/is-video-mcsp.c
+@@ -424,7 +424,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-mec.c
++++ b/drivers/media/platform/exynos/camera/is-video-mec.c
+@@ -289,7 +289,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-orbc.c
++++ b/drivers/media/platform/exynos/camera/is-video-orbc.c
+@@ -288,7 +288,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-pafrdma.c
++++ b/drivers/media/platform/exynos/camera/is-video-pafrdma.c
+@@ -363,7 +363,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_OUTPUT
+ 			| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-sensor.c
++++ b/drivers/media/platform/exynos/camera/is-video-sensor.c
+@@ -273,7 +273,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_OUTPUT
+ 			| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ssvc0.c
++++ b/drivers/media/platform/exynos/camera/is-video-ssvc0.c
+@@ -307,7 +307,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ssvc1.c
++++ b/drivers/media/platform/exynos/camera/is-video-ssvc1.c
+@@ -299,7 +299,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ssvc2.c
++++ b/drivers/media/platform/exynos/camera/is-video-ssvc2.c
+@@ -299,7 +299,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ssvc3.c
++++ b/drivers/media/platform/exynos/camera/is-video-ssvc3.c
+@@ -299,7 +299,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_CAPTURE
+ 			| V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-vra.c
++++ b/drivers/media/platform/exynos/camera/is-video-vra.c
+@@ -253,7 +253,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 				| V4L2_CAP_VIDEO_OUTPUT
+ 				| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }
+--- a/drivers/media/platform/exynos/camera/is-video-ypp.c
++++ b/drivers/media/platform/exynos/camera/is-video-ypp.c
+@@ -263,7 +263,6 @@
+ 	cap->capabilities |= V4L2_CAP_STREAMING
+ 			| V4L2_CAP_VIDEO_OUTPUT
+ 			| V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+-	cap->device_caps |= cap->capabilities;
+ 
+ 	return 0;
+ }

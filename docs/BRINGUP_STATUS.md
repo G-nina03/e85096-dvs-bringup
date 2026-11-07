@@ -95,7 +95,7 @@
 | `/etc/systemd/system.conf.d/e850-cpu7.conf` | 추가(11.30, 39e8c1a4…). `CPUAffinity=0-6`: systemd가 띄우는 모든 프로세스를 CPU0~6에 둔다. CPU7은 웹 스레드만 |
 | `/usr/local/bin/e850-wifi.sh` | 2026-11-07 `modprobe scsc_mx disable_recovery_handling=0`(47489536…, 11.31): Wi-Fi 펌웨어 패닉 뒤 자동 복구. 이전: `/root/e850-wifi.sh.prev-recovery`(7d4af31c) |
 | `/lib/modules/.../is-cis-s5krc1s.ko` | 2026-11-06 to_scnt1 999 복원 + `packets`/`flush_us` param(54365f52…, 11.25). 이전: `/root/is-cis-s5krc1s.ko.1999` |
-| `/lib/modules/.../fimc-is.ko` | 2026-11-07 bypass 경고 로그 끔(f1e7bbf3…, 11.32). 이전: `/root/fimc-is.ko.prev-11.31`(099c323b) |
+| `/lib/modules/.../fimc-is.ko` | 2026-11-07 bypass 경고 로그 끔(f1e7bbf3…, 11.32), querycap WARN 수정(ca6c8863…, 11.34, taint W 없어짐). 이전: `/root/fimc-is.ko.prev-11.34`(f1e7bbf3), `.prev-11.31`(099c323b) |
 | `/lib/modules/.../s3c2410_wdt.ko`, `e850-vbus.ko` | 2026-11-07 boot-dvs3와 같은 판(dfd6bae7…, 0990ffa3…, 11.32). 이전: `/root/*.ko.prev-11.32` |
 | `/lib/modules/.../scsc_mx.ko`, `scsc_wlan.ko` | 2026-11-07 `mx_panic` 0600, system error log 크기 버그 수정(ee2b5944…, a02d408e…, 11.33). 이전: `/root/scsc_*.ko.prev-11.33` |
 | `/etc/sysctl.d/90-e850-autoreboot.conf` | 추가(11.22). `softlockup_panic=1`, `panic=5` |

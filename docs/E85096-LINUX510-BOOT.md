@@ -2429,7 +2429,7 @@ Mac: `~/e850-logs/wifi/`(`panic0634-full.txt`, `rec1/`: `web.log`, `state.log`, 
   - 11.31에서는 4번째 복구 때 WARN이 났다. 그렇다면 복구 한 번에 500 B 넘게 쌓인다. 9번이면 4 KB를 넘었을 것으로 본다(버퍼 위치는 읽을 방법이 없어 추정이다).
 - 이 부팅의 커널 WARN 13줄은 모두 `v4l_querycap`(`v4l2-ioctl.c:1108`, udev `v4l_id`가 카메라 노드를 열 때)이다.
   - 부팅 때마다 나는 원래 WARN이다. taint W는 이것 때문에 처음부터 켜져 있다.
-  - 고치지 않았다.
+  - 이번에는 고치지 않았다. 11.34에서 고쳤다.
 - 시험 뒤: `dvslive`, `e850-wifi`, `nginx`, `e850-hdmi` active. 8080 `/stats` fps 104, crc 0.
 - 카메라 `frame is drop`/`interrupt lost`가 13줄 났다. 11.31에서 본 복구 중 부작용과 같다(장치 IRQ가 모두 CPU0).
 - 이 부팅에서도 `e850-vbus: … after 0 ms`였다(boot-dvs3로 6번째 부팅).
@@ -2443,3 +2443,37 @@ Mac: `~/e850-logs/wifi/`(`panic0634-full.txt`, `rec1/`: `web.log`, `state.log`, 
 | 재부팅 | 08:58 KST |
 | Wi-Fi 펌웨어 | 09:00:28~09:02:26 KST 강제 패닉 9번, 모두 복구 |
 | `/var/tmp/wifi-panicloop.sh` | 강제 패닉 반복 시험(`tools/board/wifi-panicloop.sh`와 같음) |
+
+### 11.34 카메라 `v4l_querycap` WARN 수정(부팅마다 13번, taint W) (2026-11-07)
+
+11.33에서 남긴 부팅 때 WARN을 고쳤다.
+
+**원인(소스로 확인).**
+- `v4l2-ioctl.c` `v4l_querycap()`:
+  - 드라이버를 부르기 전에 `cap->device_caps = vfd->device_caps`, `cap->capabilities = vfd->device_caps | V4L2_CAP_DEVICE_CAPS`로 채운다.
+  - 드라이버가 돌아온 뒤 `WARN_ON(cap->device_caps != vfd->device_caps)`를 본다(1108번 줄). `WARN_ON_ONCE`가 아니라서 부를 때마다 난다.
+- 카메라 드라이버의 `vidioc_querycap` 31개 중 28개가 끝에 `cap->device_caps |= cap->capabilities;`를 한다.
+  - `capabilities`에는 이미 `V4L2_CAP_DEVICE_CAPS`(0x80000000)가 들어 있다. 그래서 `device_caps`가 늘 달라진다.
+  - 나머지 3개(clhc, lmec, lmes)에는 이 줄이 없다.
+- `vd.device_caps`는 `is-video.c:1741`에서 방향에 맞게 이미 설정된다(`VIDEO_CAPTURE_DEVICE_CAPS` 또는 `VIDEO_OUTPUT_DEVICE_CAPS`).
+- 부르는 쪽은 부팅 때 udev `v4l_id`다(카메라 노드 13개, WARN 하나에 backtrace 약 44줄). `ov5647-cap.py`(dvslive)는 QUERYCAP을 부르지 않는다.
+
+**바꾼 것.**
+- `modules/s5krc1s-pablo/patches/querycap-device-caps.patch`를 새로 만들었다. 28개 파일에서 그 한 줄을 지운다. 드라이버가 더하는 비트는 `capabilities`에 그대로 남는다.
+  - `apply.sh`가 적용한다(`quiet-bypass-log.patch` 다음).
+- 전체 `apply.sh`를 다시 돌렸다(exit 0). 파일 복사와 `sed -i`로 mtime이 바뀌어 카메라 디렉터리 전체(114개 객체)가 다시 컴파일됐다.
+  - 다시 빌드한 `is-cis-s5krc1s.ko`는 strip 뒤 보드 것과 md5가 같다(0b35f571). 빌드가 재현되고, 내용이 바뀐 것은 `fimc-is.ko`뿐이다.
+- `fimc-is.ko`(ca6c8863…)를 보드에 넣었다. 이전 판은 `/root/fimc-is.ko.prev-11.34`(f1e7bbf3)다. 10:32 KST에 재부팅했다.
+
+**결과(측정).**
+- 이 부팅의 커널 `WARNING:` 0줄, `v4l_querycap` 0줄이다. 수동으로 `/lib/udev/v4l_id /dev/video102`를 한 번 더 돌린 뒤에도 0줄이었다.
+- `/proc/sys/kernel/tainted`: 12800(W+O+E) → **12288(O+E)**. 이제 W가 켜지면 진짜 WARN이다.
+- `v4l_id` 결과: `ID_V4L_PRODUCT=exynos-is-ss1`, `ID_V4L_CAPABILITIES=:video_output:`. `/dev/v4l/by-path` 링크도 있다.
+- live: fps 104, coverage 100, crc 0. `dvslive`, `e850-wifi`, `nginx`, `e850-hdmi` active. `e850-vbus: … after 0 ms`(boot-dvs3로 7번째 부팅).
+
+**보드에 바꾼 것.**
+
+| 경로 | 변경 |
+|---|---|
+| `/lib/modules/.../fimc-is.ko` | querycap `device_caps` 줄 뺌(ca6c8863…). 이전: `/root/fimc-is.ko.prev-11.34`(f1e7bbf3) |
+| 재부팅 | 10:32 KST |
