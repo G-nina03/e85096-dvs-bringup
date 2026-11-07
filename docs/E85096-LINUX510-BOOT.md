@@ -2551,3 +2551,52 @@ Mac: `~/e850-logs/wifi/`(`panic0634-full.txt`, `rec1/`: `web.log`, `state.log`, 
 |---|---|
 | `/var/tmp/boxbench/boxes.jsonl` | 시험 기록 80줄. Mac 사본은 `~/e850-logs/boxbench-boxes1.jsonl` |
 | `dvsbox-test` | 임시 유닛. 멈췄다. `dvslive`를 다시 시작했다(active, `--boxes` 없음, fps 104) |
+
+### 11.36 DVS 사람 행동 분류: 선행 연구 조사, 850 추론 실측, 설계 (2026-11-07)
+
+사용자 요청: "우선 사람인식을 하게 해, mipi 입력단에서 바로 인식했으면 하는데 hdmi로 표시하기전에". 이어서 "사람의 행동을 분류하는것을 하고 싶어, 나타났다, 움직인다. 넘어진다", "카메라가 아니라 dvs로 할꺼야", "전이 학습으로 했으면해 … 찾아봐". 상자 크기 측정(11.35)은 별개 과제로 그대로 둔다(사용자: "과제가 다른거니까").
+
+**정한 것(사용자 답).**
+- 목적은 사람 기록(파일)이다. 첫 판은 옆에서 보는 고정 DVS, 한 사람이다.
+- 넘어짐은 앉기·천천히 눕기와 구별한다.
+- 우리 센서 녹화는 우선 동작당 5~10번이다.
+- 방법은 "850에서 현실적인 것"으로 정했다. 아래 실측을 근거로 A′를 골랐다.
+  - A′: 60 ms 이벤트 수 프레임 → ImageNet 사전 학습 MobileNetV3-small → GRU, 초당 16번 판정.
+- 설계는 `docs/superpowers/specs/2026-11-07-dvs-person-action-design.md`에 있다(spec 검토 대기). 코드는 쓰지 않았다.
+
+**선행 연구(논문 값, 재현하지 않음).** 자세한 표는 spec 3.1절에 있다.
+- Samsung Research 2017(DVS 640×480): 프레임 10장을 쌓은 TSN, F1 0.955, Jetson TX1 CPU 31 fps.
+- Sony·Intel 2025(IMX636): 60 ms 프레임, 16 Hz. 넘어짐 F1은 CNN+MLP 46%, CNN+S4D 77%, MCUNet+S4D 84%였다. 시간 상태가 결과를 크게 갈랐다. 구조는 이 연구를 따른다.
+- 공개 데이터는 PAF(DAVIS346, falling 대 bending 등)와 DailyDVS-200(MIT, fall down·walk·sit down·stand up·pick up 등)이다. 두 데이터 모두 "lie down" 클래스는 없다.
+- 채택하지 않은 것과 이유:
+  - 점군 방식(TTPOINT, EventMamba): 샘플당 0.6~1 GFLOPs. 우리 이벤트는 대부분 잡음이라 점을 뽑기 전에 걸러야 한다.
+  - CLIP 기반(EZSR, EventCLIP): ViT라서 판정 한 번에 수 초다.
+  - 큰 영상 모델(MViT, C2D): 클립당 수십 GFLOPs다.
+
+**보드 확인.**
+- CPU는 A55 최대 2002 MHz다. 플래그에 `asimdhp`는 있고 `asimddp`는 없다.
+- 쓸 수 있는 NPU가 없다. `/sys/class/misc/npu_throughput`은 PM QoS 노드다. GPU는 `mali0` 커널 드라이버만 있다.
+- 메모리는 3.5 GB 중 2.9 GB가 비어 있다.
+- 보드 numpy의 행렬곱은 0.4 GFLOPS였다. BLAS가 참조 구현(netlib `libblas3`)이라 CPU 성능을 나타내지 않는다.
+- 보드에 pip가 없다.
+
+**실측(버린 시험).**
+- 방법:
+  - Mac에서 무작위 가중치 모델(MobileNetV3-small, 첫 conv 2채널 + Linear 576→128 + GRUCell 128 + Linear 128→8)을 ONNX(opset 17)로 내보냈다.
+  - ONNX Runtime 1.31.1 aarch64 wheel과 flatbuffers, packaging, protobuf를 보드 `/var/tmp/ortspike`에 풀어 `PYTHONPATH`로 불러왔다.
+  - live(`dvslive`)가 도는 상태에서 `taskset`으로 쟀다. 300번 반복했다.
+- 결과:
+
+| 항목 | CPU5 한 코어 | CPU4~6 세 코어 |
+|---|---|---|
+| 모델, 입력 2×120×160 | 중앙값 27.2 ms (p95 27.5, 최대 27.6) | 14.6 ms (p95 14.9) |
+| 모델, 입력 2×60×80 | 14.3 ms (p95 14.7, 최대 28.5) | 8.2 ms (p95 8.4) |
+| numpy 프레임 만들기 72,000 / 126,000 / 300,000 이벤트 | 5.6 / 7.8 / 13.6 ms | — |
+
+- 해석:
+  - 160×120 입력으로 16 Hz를 돌리면 한 단계에 33~35 ms가 걸린다. 예산 62 ms 안이고, 코어 하나의 55~60%다.
+  - 설계 때 추정(코어당 3~5 GFLOPS)보다 2~3배 느렸다. 43 MFLOPs에 27 ms면 실효 약 1.6 GFLOPS다.
+  - 재는 동안 live 로그는 104 fps, draw 7.3 ms, ingest 2.9~3.9 ms(max 5.1)였다. 다만 확인한 것은 마지막 8초(세 코어 구간)뿐이다.
+- 재지 않은 것: 같은 프로세스 안의 스레드로 돌릴 때의 GIL 영향, 웹 응답 영향.
+
+**보드에 바꾼 것.** 없다. `/var/tmp/ortspike`는 시험 뒤 지웠다. 시험 파일의 Mac 사본은 Claude scratchpad에만 있다(저장소 밖).
