@@ -1,19 +1,32 @@
+//DTSI: Device Tree Source Include file.
+//: Linux Kernel에 보드의 하드웨어 구성을 알려줌,
+// ex. DVS 센서가 어느 I2C controller에 연결되어 있는지, I2C 주소가 무엇인지, Reset 핀이 어디에 연결되어 있는지 등을 정의. 
+// 실제로 하드웨어를 제어하는 코드가 아닌, 연결관계를 기술하고 Linux Driver가 해당 정보를 사용하도록 설정하는 파일.
+
+
+//GPC: General Purpose I/O Pin Group; Exynos GPIO의 핀 group 이름
+//HSI2C2: High-Speed I2C Controller 2
+//RC1S: DVS 장치를 식별하는 모델 명 
+
 // SPDX-License-Identifier: GPL-2.0
 /* E850-96 CN4 DVS I2C and active-low RESET integration. */
-#include <dt-bindings/gpio/gpio.h>
-#include "exynos-pinctrl.h"
 
-/* BSP camera control bus: GPC1[4:5], 400 kHz, MMIO 0x138c0000.
+#include <dt-bindings/gpio/gpio.h> //gpio관련 device tree 상수를 사용하기 위한 헤더
+#include "exynos-pinctrl.h" //Exynos Pin Contoller 관련 매크로를 사용하기 위한 헤더 
+
+/* BSP camera control bus: GPC1[4:5], 400 kHz, MMIO 0x138c0000., Exynos 850의 I2C Controller를 제어하기 위한 주소.
  * Linux models the USI mux as a parent: both parent and bus must be enabled.
  * The base SoC DTS already provides registers, interrupts, clocks and pins.
  */
-&usi_hsi2c_2 {
-	status = "okay";
+
+
+&usi_hsi2c_2 { //USI: Universal Serial Interface. 삼성 Exynos SoC에서 I2C, SPI, UART등의 직렬 통신 기능을 제공하기 위한 하드웨어 인터페이스 블록.
+	status = "okay"; //USI 활성화
 };
 
 &hsi2c_2 {
-	clock-frequency = <400000>;
-	status = "okay";
+	clock-frequency = <400000>; //I2C f 설정
+	status = "okay"; // I2C 활성화 
 };
 
 /* CN4 CLK2 (pin 12) -> NRV carrier pin 18 DVS_Reset, active low.
@@ -22,24 +35,25 @@
  * gpiod_get(). No MCLK output and no assumed external pull voltage.
  */
 &pinctrl_peri {
-	dvs_reset_pin: dvs-reset-pin {
-		samsung,pins = "gpc0-2";
-		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
-		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	dvs_reset_pin: dvs-reset-pin { // dvs-reset-pin이라는 pin 설정 노드 생성, dvs-reset-pin lavel을 붙임.
+		samsung,pins = "gpc0-2"; //GPC0-2번 핀을 대상 핀으로 지정
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>; //초기 pin function: input 지정; 이후 드라이버가 output으로 요청 후 실제 신호레벨 제어
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>; //내부 pull-up/donw 사용 x 지정.
 	};
 };
 
-/* RC1S reference firmware i2c_dvs.h: DVS_I2C_ADDR = (0x20 >> 1).
+/* RC1S reference firmware i2c_dvs.h: DVS_I2C_ADDR = (0x20 >> 1). == 0x10
  * Register the device for driver development; no reset GPIO hog is used.
  * nrv,rc1s is our project-local binding name, not a BSP compatible.
  */
-&hsi2c_2 {
-	dvs: dvs@10 {
-		compatible = "nrv,rc1s";
-		reg = <0x10>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&dvs_reset_pin>;
-		reset-gpios = <&gpc0 2 GPIO_ACTIVE_LOW>;
-		status = "okay";
+
+&hsi2c_2 { //앞서 활성화한 I2C Controller node를 다시 참조 
+	dvs: dvs@10 { //해당 I2C Bus 아래에 dvs@10 장치를 선언 후 dvs label 부여. 
+		compatible = "nrv,rc1s"; //Linux가 nrv, rc1s와 매칭되는 드라이버를 찾도록 함.
+		reg = <0x10>; //DVS I2C slave address를 0x10으로 설정
+		pinctrl-names = "default"; // pin control state에 defualt라는 이름을 지정 
+		pinctrl-0 = <&dvs_reset_pin>; //default 상태가 앞서 정의한 dvs_reset_pin 설정을 사용하도록 연결
+		reset-gpios = <&gpc0 2 GPIO_ACTIVE_LOW>; //RESET 신호가 gpc0의 2번 FPIO이며 active-low라고 정의.
+		status = "okay"; //DVS 장치 활성화
 	};
 };
