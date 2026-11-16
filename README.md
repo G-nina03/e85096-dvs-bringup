@@ -1,3 +1,11 @@
+# 📘 Lab PC 환경 구성 · 연구 및 개발 기록
+
+> **[📖 Notion 연구 노트 바로가기](https://app.notion.com/p/Lab-PC-416138d9b6e180f78931d063bb8d69d3)**
+>
+> E850-96 개발 환경 구축 · Linux 커널 빌드 · OV5647 센서 Bring-up · 문제 해결 기록
+
+---
+
 # E850-96 DVS Bring-up
 
 Experimental DVS sensor bring-up project for the Linaro E850-96
