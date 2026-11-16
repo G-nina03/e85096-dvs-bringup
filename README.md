@@ -1,3 +1,5 @@
+[📘 Lab PC 환경 구성 (Notion)](https://app.notion.com/p/Lab-PC-416138d9b6e180f78931d063bb8d69d3)
+
 # E850-96 DVS Bring-up
 
 Experimental DVS sensor bring-up project for the Linaro E850-96
